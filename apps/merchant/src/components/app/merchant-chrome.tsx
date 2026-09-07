@@ -20,7 +20,7 @@ import {
   X,
   ChevronDown,
 } from "lucide-react";
-import { cn } from "@ecomstrait/ui";
+import { cn, useClickOutside } from "@ecomstrait/ui";
 import { BetaBadge } from "@ecomstrait/ui/beta";
 import { signOut } from "@/lib/actions";
 
@@ -88,6 +88,7 @@ export function MerchantChrome({
 }) {
   const [drawer, setDrawer] = useState(false);
   const [menu, setMenu] = useState(false);
+  const menuRef = useClickOutside<HTMLDivElement>(menu, () => setMenu(false));
 
   return (
     <div className="flex min-h-screen bg-ink-50/50">
@@ -118,7 +119,7 @@ export function MerchantChrome({
           <button aria-label="Open menu" className="text-ink-600 lg:hidden" onClick={() => setDrawer(true)}>
             <Menu className="h-5 w-5" />
           </button>
-          <div className="relative ml-auto">
+          <div className="relative ml-auto" ref={menuRef}>
             <button
               onClick={() => setMenu((m) => !m)}
               className="flex items-center gap-2 rounded-lg py-1.5 pl-2 pr-1.5 text-left hover:bg-ink-100"

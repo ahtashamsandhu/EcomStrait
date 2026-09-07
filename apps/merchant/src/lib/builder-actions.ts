@@ -6,7 +6,7 @@ import { createAdminClient, type StoreType, type StoreStatus } from "@ecomstrait
 import { loadChatThread, appendChatTurns } from "@ecomstrait/ai";
 import { revalidatePath } from "next/cache";
 import { assertTokenBudget, recordTokenUsage, assertCanCreateStore } from "@/lib/entitlements";
-import { autoSelectProducts, getSelectedProducts, getSelectedIds, productImage } from "@/lib/catalog";
+import { autoSelectProducts, getSelectedProducts, getSelectedIds, productImage, type CatalogProduct } from "@/lib/catalog";
 import { suggestProductsForStore, type ProductSuggestion } from "@/lib/product-suggestions";
 import { merchantUrl } from "@/lib/stripe";
 import { resyncShopifyTheme } from "@/lib/shopify-actions";
@@ -41,6 +41,13 @@ export type BuildResult = {
   error?: string;
   /** True when `error` means "out of AI tokens" — show the Upgrade popup, not just the text. */
   upgrade?: boolean;
+  /**
+   * Set when the pre-selected inventory's category didn't match the
+   * described niche and was swapped out for an auto-picked match instead —
+   * shown in chat so the merchant knows their earlier selection didn't win,
+   * rather than silently seeing different products than they picked.
+   */
+  note?: string;
 };
 
 // A direct re-export-from, not `export type { BuilderTurn, ConverseResult };`
@@ -191,13 +198,44 @@ export async function converseBuilderTurn(
 }
 
 /**
+ * Whether the merchant's already-selected inventory (from Find Suppliers)
+ * plausibly matches what they just told the conversational builder they
+ * want to sell. Same loose word-overlap check `autoSelectProducts` already
+ * uses to match a niche string against a `category` column, just checked
+ * against the selection instead of the whole catalog: does any real word in
+ * the described niche appear in (or contain) any selected product's category?
+ *
+ * A real bug this guards against: a merchant selects cosmetics inventory in
+ * Find Suppliers, lands in the builder, then tells the chat "a shoe store" —
+ * without this check `finalizeBuilderConversation` below would still hand
+ * the stale cosmetics selection to `generateStorePlan` and launch a "shoe
+ * store" stocked entirely with cosmetics.
+ */
+function selectionMatchesNiche(products: CatalogProduct[], niche: string): boolean {
+  const nicheWords = niche
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((w) => w.length > 2);
+  // Nothing concrete to compare against (e.g. the "a new store" filler) —
+  // don't second-guess a real selection over an unspecific niche string.
+  if (!nicheWords.length) return true;
+  return products.some((p) => {
+    const category = (p.category ?? "").toLowerCase().trim();
+    if (!category) return false;
+    return nicheWords.some((w) => category.includes(w) || w.includes(category));
+  });
+}
+
+/**
  * Co-founder build: generate the full plan + SEO + theme, once the
  * conversation has gathered what it needs (`converseBuilderTurn` returned
  * `done: true`). Same job `buildStore` used to do from 4 scripted answers,
  * now fed by whatever the conversation actually collected.
  *
  * `useSelected` means the merchant arrived from Find Suppliers with products
- * already chosen — build around those instead of auto-picking for the niche.
+ * already chosen — build around those instead of auto-picking for the niche,
+ * as long as the selection's own category still matches what the merchant
+ * described wanting to sell (see `selectionMatchesNiche`).
  */
 export async function finalizeBuilderConversation(
   answers: { niche: string; audience?: string | null; styleKeyword?: string | null; storeName?: string | null },
@@ -212,8 +250,15 @@ export async function finalizeBuilderConversation(
       return { error: "Tell me what you want to sell first." };
     }
 
-    // Fall back to auto-pick if the basket emptied between pages.
-    const picked = chosen.length ? chosen : await autoSelectProducts(answers.niche, 8);
+    // A described niche that disagrees with the pre-selected inventory's own
+    // category means that selection is stale — fall back to auto-picking
+    // products that actually match the niche, same as an empty basket does.
+    const nicheKnown = answers.niche.trim().length >= 2;
+    const selectionMismatched = chosen.length > 0 && nicheKnown && !selectionMatchesNiche(chosen, answers.niche);
+
+    // Fall back to auto-pick if the basket emptied between pages, or if
+    // what's in it doesn't match what the merchant just said they want to sell.
+    const picked = chosen.length && !selectionMismatched ? chosen : await autoSelectProducts(answers.niche, 8);
 
     const { plan, tokensUsed } = await generateStorePlan(answers, picked.map((p) => p.title));
     await recordTokenUsage(tokensUsed);
@@ -228,7 +273,14 @@ export async function finalizeBuilderConversation(
       category: p.category,
     }));
 
-    return { plan, products, theme: themeForStyle(answers.styleKeyword ?? undefined) };
+    return {
+      plan,
+      products,
+      theme: themeForStyle(answers.styleKeyword ?? undefined),
+      note: selectionMismatched
+        ? `Your previously selected inventory didn't match "${answers.niche.trim()}", so I picked matching products instead — swap in your own from Find Suppliers or the product list anytime.`
+        : undefined,
+    };
   } catch (err) {
     console.error("[builder] finalizeBuilderConversation failed:", err);
     return { error: "Building your store didn't go through — try again in a moment." };

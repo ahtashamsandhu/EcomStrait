@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Check, ChevronDown, Clock, Loader2, Plus, Sparkles, X } from "lucide-react";
-import { cn } from "@ecomstrait/ui";
+import { cn, useClickOutside } from "@ecomstrait/ui";
 import type { ListingStatus } from "@ecomstrait/db/types";
 import type { StoreOption } from "@/lib/listings";
 import { requestListing, removeListing } from "@/lib/listing-actions";
@@ -44,6 +44,7 @@ export function ListingMenu({
   const [open, setOpen] = useState(false);
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const menuRef = useClickOutside<HTMLDivElement>(open, () => setOpen(false));
 
   const listedCount = Object.values(listings).filter((s) => s !== "declined").length;
 
@@ -75,7 +76,7 @@ export function ListingMenu({
         : "Add to store";
 
   return (
-    <div className="relative">
+    <div className="relative" ref={menuRef}>
       <button
         onClick={() => setOpen((o) => !o)}
         disabled={pending}

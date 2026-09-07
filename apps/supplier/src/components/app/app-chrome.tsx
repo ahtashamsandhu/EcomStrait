@@ -20,7 +20,7 @@ import {
   Bell,
   ChevronDown,
 } from "lucide-react";
-import { cn } from "@ecomstrait/ui";
+import { cn, useClickOutside } from "@ecomstrait/ui";
 import { BetaBadge } from "@ecomstrait/ui/beta";
 import { signOut } from "@/lib/actions";
 import type { Notification } from "@/lib/notifications";
@@ -94,9 +94,23 @@ export function AppChrome({
   notifications?: Notification[];
   children: React.ReactNode;
 }) {
+  const pathname = usePathname();
   const [drawer, setDrawer] = useState(false);
   const [menu, setMenu] = useState(false);
   const [bell, setBell] = useState(false);
+
+  // Close any open dropdowns/drawer when navigating to a different tab.
+  const [prevPathname, setPrevPathname] = useState(pathname);
+  if (pathname !== prevPathname) {
+    setPrevPathname(pathname);
+    setBell(false);
+    setMenu(false);
+    setDrawer(false);
+  }
+
+  // Same for a click anywhere outside the open dropdown itself.
+  const bellRef = useClickOutside<HTMLDivElement>(bell, () => setBell(false));
+  const menuRef = useClickOutside<HTMLDivElement>(menu, () => setMenu(false));
 
   return (
     <ToastProvider>
@@ -137,7 +151,7 @@ export function AppChrome({
 
             <div className="ml-auto flex items-center gap-2">
               {/* Notifications */}
-              <div className="relative">
+              <div className="relative" ref={bellRef}>
                 <button
                   aria-label="Notifications"
                   onClick={() => {
@@ -181,7 +195,7 @@ export function AppChrome({
               </div>
 
               {/* Account menu */}
-              <div className="relative">
+              <div className="relative" ref={menuRef}>
                 <button
                   onClick={() => {
                     setMenu((m) => !m);

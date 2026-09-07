@@ -76,7 +76,7 @@ export function PasswordCard({ email, hasPassword: initialHasPassword }: { email
             label="Current password"
             required
             autoComplete="current-password"
-            placeholder="••••••••"
+            placeholder="Enter your current password"
             value={current}
             onChange={(e) => setCurrent(e.target.value)}
           />

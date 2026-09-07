@@ -3,13 +3,17 @@ import type { Metadata } from "next";
 import { CheckCircle2 } from "lucide-react";
 import { getStorefront } from "@/lib/storefront";
 import { confirmOrder } from "@/lib/storefront-orders";
-import { writeCart } from "@/lib/storefront-api";
+import { ClearCartOnMount } from "@/components/storefront/clear-cart-on-mount";
 
 export const metadata: Metadata = { title: "Thank you" };
 // Overrides the `/store` layout's `revalidate = 60` — this page confirms one
-// customer's own order and clears their cart as a side effect on every real
-// visit; it must never serve a cached response meant for a different
-// customer's session_id.
+// customer's own order on every real visit; it must never serve a cached
+// response meant for a different customer's session_id.
+//
+// Clearing the cart is NOT done here: a Server Component can't modify cookies
+// (Next.js throws), so that lives in the `checkout/return` Route Handler that
+// Stripe redirects to before this page, with `ClearCartOnMount` as a
+// client-side fallback.
 export const dynamic = "force-dynamic";
 
 export default async function SuccessPage({
@@ -21,11 +25,11 @@ export default async function SuccessPage({
 }) {
   const { id } = await params;
   const { session_id } = await searchParams;
+  let paid = false;
   if (session_id) {
     try {
-      await confirmOrder(id, session_id);
-      // The purchase went through — don't leave the paid items in the cart.
-      await writeCart(id, []);
+      // Idempotent — normally already recorded by the return handler.
+      paid = Boolean(await confirmOrder(id, session_id));
     } catch {
       /* best-effort: the thank-you page must render either way */
     }
@@ -34,6 +38,7 @@ export default async function SuccessPage({
 
   return (
     <main className="grid min-h-screen place-items-center bg-ink-50/50 px-6 text-center">
+      {paid && <ClearCartOnMount storeId={id} />}
       <div className="max-w-md">
         <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-brand-50 text-brand-600">
           <CheckCircle2 className="h-7 w-7" />

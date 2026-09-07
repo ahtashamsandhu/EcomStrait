@@ -42,10 +42,16 @@ export async function getNotifications(
       });
     }
 
+    // Same visibility rule as /orders: an order only counts once its wallet
+    // charge has actually gone through. A held one (the merchant had no
+    // credits to place it, or the supplier's own wallet can't cover a COD
+    // deduction) isn't something the supplier can act on yet, so nudging
+    // them to "fulfil" it would be a dead end.
     const { count: openOrders } = await supabase
       .from("orders")
       .select("id", { count: "exact", head: true })
       .eq("supplier_id", supplier.id)
+      .eq("credit_status", "deducted")
       .in("status", ["processing", "shipped"]);
     if (openOrders && openOrders > 0) {
       items.push({

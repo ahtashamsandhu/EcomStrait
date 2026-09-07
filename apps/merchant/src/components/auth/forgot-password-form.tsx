@@ -2,62 +2,38 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Loader2, MailCheck } from "lucide-react";
-import { createClient } from "@ecomstrait/auth/client";
+import { Loader2, MailCheck, AlertCircle } from "lucide-react";
 import { Button, TextField } from "@/components/ui";
-import { siteUrl } from "@/lib/site-url";
+import { requestPasswordReset } from "@/lib/actions";
+
+type Alert = { kind: "success" | "error"; text: string };
+
+const SENT_MESSAGE =
+  "Password reset email has been sent to your email. Please check your inbox after a few minutes.";
+const NOT_FOUND_MESSAGE =
+  "This email does not exist in our database. Please check your email address and try again.";
 
 /**
- * Both states (the request form, and the "check your inbox" confirmation)
- * live in one component — unlike signup, which navigates to a separate
- * /verify-email page, here the heading text depends on which state we're in,
- * so page.tsx stays a thin shell and this owns both.
+ * The lookup and send both happen in the `requestPasswordReset` server action
+ * — the browser can't tell whether an email is registered on its own (and
+ * shouldn't be able to). The form only maps the action's outcome onto an
+ * alert. It stays on screen after either outcome so a mistyped address can
+ * be corrected and resubmitted without navigating back.
  */
 export function ForgotPasswordForm() {
   const [email, setEmail] = useState("");
-  const [status, setStatus] = useState<"idle" | "loading" | "sent">("idle");
-  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [alert, setAlert] = useState<Alert | null>(null);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setStatus("loading");
-    setError(null);
-    const supabase = createClient();
-    // Just the origin — the "Reset Password" email template appends
-    // /auth/confirm?token_hash=...&type=recovery&next=/reset-password itself
-    // via {{ .RedirectTo }}. That route verifies the token_hash directly
-    // (not the PKCE `?code=` /auth/callback uses), which is what makes the
-    // link work when opened in a different browser/device than the one that
-    // requested it — the common case for a password reset.
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: siteUrl(),
-    });
-    if (error) {
-      setError(error.message);
-      setStatus("idle");
-      return;
-    }
-    setStatus("sent");
-  }
-
-  if (status === "sent") {
-    return (
-      <div className="flex flex-col items-center gap-5 text-center">
-        <span className="grid h-12 w-12 place-items-center rounded-2xl bg-brand-50 text-brand-600">
-          <MailCheck className="h-6 w-6" />
-        </span>
-        <div>
-          <h1 className="text-2xl font-bold text-ink-950">Check your inbox</h1>
-          <p className="mt-2 text-sm text-ink-500">
-            If an account exists for <span className="font-medium text-ink-800">{email}</span>,
-            we&apos;ve sent a link to reset your password.
-          </p>
-        </div>
-        <p className="text-sm text-ink-500">
-          <Link href="/login" className="font-semibold text-brand-600 hover:underline">Back to log in</Link>
-        </p>
-      </div>
-    );
+    setLoading(true);
+    setAlert(null);
+    const result = await requestPasswordReset(email);
+    setLoading(false);
+    if (result.status === "sent") setAlert({ kind: "success", text: SENT_MESSAGE });
+    else if (result.status === "not_found") setAlert({ kind: "error", text: NOT_FOUND_MESSAGE });
+    else setAlert({ kind: "error", text: result.message });
   }
 
   return (
@@ -70,9 +46,25 @@ export function ForgotPasswordForm() {
       </div>
       <form onSubmit={onSubmit} className="flex flex-col gap-4">
         <TextField id="email" label="Email" type="email" required autoComplete="email" placeholder="you@email.com" value={email} onChange={(e) => setEmail(e.target.value)} />
-        {error && <p className="text-sm text-red-600">{error}</p>}
-        <Button type="submit" disabled={status === "loading"}>
-          {status === "loading" ? <Loader2 className="h-4 w-4 animate-spin" /> : "Send reset link"}
+        {alert && (
+          <div
+            role="alert"
+            className={
+              alert.kind === "success"
+                ? "flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800"
+                : "flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+            }
+          >
+            {alert.kind === "success" ? (
+              <MailCheck className="mt-0.5 h-4 w-4 shrink-0" />
+            ) : (
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            )}
+            <span>{alert.text}</span>
+          </div>
+        )}
+        <Button type="submit" disabled={loading}>
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Send reset link"}
         </Button>
       </form>
       <p className="text-center text-sm text-ink-500">

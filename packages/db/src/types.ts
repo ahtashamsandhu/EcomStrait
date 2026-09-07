@@ -953,6 +953,8 @@ export type Database = {
       };
       is_admin: { Args: Record<string, never>; Returns: boolean };
       reverse_cod_deduction: { Args: { p_order_id: string }; Returns: boolean };
+      /** service_role only — see the migration. Callable via the admin client. */
+      auth_email_exists: { Args: { p_email: string }; Returns: boolean };
     };
     Enums: { user_role: UserRole };
     CompositeTypes: Record<string, never>;

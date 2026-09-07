@@ -1,4 +1,5 @@
 export { cn } from "./cn";
+export { useClickOutside } from "./use-click-outside";
 export {
   PAGE_SIZE,
   sanitizeSearch,

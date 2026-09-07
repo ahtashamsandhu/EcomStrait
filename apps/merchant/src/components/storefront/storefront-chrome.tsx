@@ -3,7 +3,8 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { ShoppingBag, Plus, Minus, Loader2, X, Menu } from "lucide-react";
+import { ShoppingBag, Plus, Minus, Loader2, X, Menu, ChevronDown } from "lucide-react";
+import { useClickOutside } from "@ecomstrait/ui";
 import type { Storefront } from "@/lib/storefront";
 import { useStorefrontCart } from "@/components/storefront/use-storefront";
 import { usePreviewCart } from "@/components/storefront/use-preview-cart";
@@ -27,7 +28,13 @@ export function useStorefrontCartContext(): CartApi {
   return ctx;
 }
 
-export type NavLink = { label: string; href: string };
+/**
+ * `children` bundles a store's individual category links under one nav
+ * entry (e.g. "Categories") so a store with several categories shows one
+ * dropdown tab instead of one tab per category — see `getStorefrontNav` in
+ * storefront-api.ts, the sole place this array gets built for a live store.
+ */
+export type NavLink = { label: string; href: string; children?: NavLink[] };
 
 type ChromeProps = {
   store: Storefront;
@@ -79,6 +86,18 @@ function ChromeBody({
   const { cart, isPending, error, setQuantity, remove, checkout } = cartApi;
   const [open, setOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  // Which mobile-drawer dropdown entries (e.g. "Categories") are expanded —
+  // keyed by href, since the drawer has no hover to rely on: tapping the
+  // entry toggles its sublist open instead of navigating away immediately.
+  const [openDropdowns, setOpenDropdowns] = useState<Set<string>>(new Set());
+  function toggleDropdown(href: string) {
+    setOpenDropdowns((prev) => {
+      const next = new Set(prev);
+      if (next.has(href)) next.delete(href);
+      else next.add(href);
+      return next;
+    });
+  }
 
   // Mirrors the Shopify Liquid themes' own nav drawer (assets/theme.js,
   // initNav): closing on Escape and on crossing back to desktop width isn't
@@ -104,6 +123,11 @@ function ChromeBody({
 
   const line = "color-mix(in srgb, var(--ink) 12%, transparent)";
   const surface = "color-mix(in srgb, var(--ink) 4%, var(--bg))";
+  // The mobile nav panel is in-flow, not an overlay — nothing else stops a
+  // click elsewhere on the page from doing something else while it's still
+  // open. Ref covers the whole header (hamburger button included), so this
+  // only fires for a genuine click outside it, not the toggle click itself.
+  const mobileNavRef = useClickOutside<HTMLElement>(menuOpen, () => setMenuOpen(false));
 
   return (
     <CartContext.Provider value={cartApi}>
@@ -117,6 +141,7 @@ function ChromeBody({
       )}
 
       <header
+        ref={mobileNavRef}
         className="sticky top-0 z-20 border-b backdrop-blur"
         style={{ background: "color-mix(in srgb, var(--bg) 90%, transparent)", borderColor: line }}
       >
@@ -139,16 +164,47 @@ function ChromeBody({
 
           {navLinks.length > 0 && (
             <nav className="hidden items-center gap-8 sm:flex">
-              {navLinks.map((l) => (
-                <a
-                  key={l.href}
-                  href={l.href}
-                  className="text-xs font-semibold uppercase opacity-70 transition hover:opacity-100"
-                  style={{ letterSpacing: "0.1em" }}
-                >
-                  {l.label}
-                </a>
-              ))}
+              {navLinks.map((l) =>
+                l.children?.length ? (
+                  // Hover-opened on desktop — `group-focus-within` keeps it
+                  // reachable by keyboard too, not just a mouse.
+                  <div key={l.href} className="group relative">
+                    <button
+                      type="button"
+                      className="flex items-center gap-1 text-xs font-semibold uppercase opacity-70 transition hover:opacity-100"
+                      style={{ letterSpacing: "0.1em" }}
+                    >
+                      {l.label}
+                      <ChevronDown className="h-3 w-3 transition group-hover:rotate-180" />
+                    </button>
+                    <div className="invisible absolute left-1/2 top-full z-30 -translate-x-1/2 pt-3 opacity-0 transition group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">
+                      <div
+                        className="flex flex-col gap-1 border p-2 shadow-lg"
+                        style={{ background: "var(--bg)", borderColor: line, borderRadius: "var(--radius)" }}
+                      >
+                        {l.children.map((c) => (
+                          <a
+                            key={c.href}
+                            href={c.href}
+                            className="whitespace-nowrap px-3 py-2 text-xs font-medium opacity-70 transition hover:opacity-100"
+                          >
+                            {c.label}
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <a
+                    key={l.href}
+                    href={l.href}
+                    className="text-xs font-semibold uppercase opacity-70 transition hover:opacity-100"
+                    style={{ letterSpacing: "0.1em" }}
+                  >
+                    {l.label}
+                  </a>
+                ),
+              )}
             </nav>
           )}
 
@@ -188,17 +244,51 @@ function ChromeBody({
             show once the real nav reappears at 640px+. */}
         {menuOpen && navLinks.length > 0 && (
           <nav className="flex flex-col border-t px-6 py-3 sm:hidden" style={{ borderColor: line }}>
-            {navLinks.map((l) => (
-              <a
-                key={l.href}
-                href={l.href}
-                onClick={() => setMenuOpen(false)}
-                className="py-2.5 text-xs font-semibold uppercase opacity-70 transition hover:opacity-100"
-                style={{ letterSpacing: "0.1em" }}
-              >
-                {l.label}
-              </a>
-            ))}
+            {navLinks.map((l) =>
+              l.children?.length ? (
+                // No hover on touch — tapping the entry expands its sublist
+                // in place instead of navigating away.
+                <div key={l.href}>
+                  <button
+                    type="button"
+                    onClick={() => toggleDropdown(l.href)}
+                    aria-expanded={openDropdowns.has(l.href)}
+                    className="flex w-full items-center justify-between py-2.5 text-xs font-semibold uppercase opacity-70 transition hover:opacity-100"
+                    style={{ letterSpacing: "0.1em" }}
+                  >
+                    {l.label}
+                    <ChevronDown
+                      className="h-3.5 w-3.5 transition"
+                      style={{ transform: openDropdowns.has(l.href) ? "rotate(180deg)" : undefined }}
+                    />
+                  </button>
+                  {openDropdowns.has(l.href) && (
+                    <div className="flex flex-col pl-4">
+                      {l.children.map((c) => (
+                        <a
+                          key={c.href}
+                          href={c.href}
+                          onClick={() => setMenuOpen(false)}
+                          className="py-2 text-xs font-medium opacity-70 transition hover:opacity-100"
+                        >
+                          {c.label}
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <a
+                  key={l.href}
+                  href={l.href}
+                  onClick={() => setMenuOpen(false)}
+                  className="py-2.5 text-xs font-semibold uppercase opacity-70 transition hover:opacity-100"
+                  style={{ letterSpacing: "0.1em" }}
+                >
+                  {l.label}
+                </a>
+              ),
+            )}
           </nav>
         )}
       </header>
@@ -209,16 +299,22 @@ function ChromeBody({
         <div className="mx-auto flex max-w-6xl flex-col items-center gap-6 text-center">
           {navLinks.length > 0 && (
             <nav className="flex flex-wrap justify-center gap-6">
-              {navLinks.map((l) => (
-                <a
-                  key={l.href}
-                  href={l.href}
-                  className="text-xs font-semibold uppercase opacity-60 transition hover:opacity-100"
-                  style={{ letterSpacing: "0.08em" }}
-                >
-                  {l.label}
-                </a>
-              ))}
+              {/* The footer is a flat list with no hover/tap affordance of its
+                  own, so a bundled dropdown entry (e.g. "Categories") is
+                  unpacked back into its individual category links here rather
+                  than shown as an unclickable label. */}
+              {navLinks
+                .flatMap((l) => (l.children?.length ? l.children : [l]))
+                .map((l) => (
+                  <a
+                    key={l.href}
+                    href={l.href}
+                    className="text-xs font-semibold uppercase opacity-60 transition hover:opacity-100"
+                    style={{ letterSpacing: "0.08em" }}
+                  >
+                    {l.label}
+                  </a>
+                ))}
             </nav>
           )}
           <div className="flex flex-col items-center gap-3">

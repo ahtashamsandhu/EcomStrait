@@ -42,7 +42,7 @@ export function LoginForm() {
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
       <TextField id="email" label="Email" type="email" required autoComplete="email" placeholder="you@email.com" value={email} onChange={(e) => setEmail(e.target.value)} />
-      <PasswordField id="password" label="Password" required autoComplete="current-password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} />
+      <PasswordField id="password" label="Password" required autoComplete="current-password" placeholder="Enter your password" value={password} onChange={(e) => setPassword(e.target.value)} />
       <Link href="/forgot-password" className="-mt-2 self-end text-xs font-semibold text-brand-600 hover:underline">
         Forgot password?
       </Link>

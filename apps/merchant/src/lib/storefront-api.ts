@@ -312,15 +312,28 @@ export const listStoreCategories = cache(async (storeId: string): Promise<Catego
     .map(([category, g]) => ({ category, count: g.count, image: g.image }));
 });
 
-export type StorefrontNavLink = { label: string; href: string };
+export type StorefrontNavLink = {
+  label: string;
+  href: string;
+  /**
+   * Set only on the single bundled "Categories" entry `getStorefrontNav`
+   * builds when a store has more than one category — the real per-category
+   * links live here instead of each getting its own top-level nav slot, so a
+   * 5-category store shows one dropdown tab, not five. Absent (or one item)
+   * means "plain link," same as before this field existed.
+   */
+  children?: StorefrontNavLink[];
+};
 
 const MAX_NAV_CATEGORIES = 6;
 
 /**
- * The category nav — up to a handful of real categories plus a "Shop all"
- * catch-all, always joined by a "Sale" link (the homepage's Sale band
- * self-hides when nothing's actually marked down, so this never needs its
- * own existence check) and "About" when the store has about content.
+ * The category nav — a store's real categories (a single direct link if
+ * there's only one, or one "Categories" dropdown bundling all of them if
+ * there's more) plus a "Shop all" catch-all, always joined by a "Sale" link
+ * (the homepage's Sale band self-hides when nothing's actually marked down,
+ * so this never needs its own existence check) and "About" when the store
+ * has about content.
  *
  * One function so the homepage, the product page, and the listing page all
  * build the identical nav from the identical data — never three
@@ -344,10 +357,18 @@ export async function getStorefrontNav(
   // instead of `/#sale`), so those two anchors need the actual home path.
   const home = base || "/";
   const categories = await listStoreCategories(storeId);
-  const links: StorefrontNavLink[] = categories.slice(0, MAX_NAV_CATEGORIES).map((c) => ({
+  const categoryLinks: StorefrontNavLink[] = categories.slice(0, MAX_NAV_CATEGORIES).map((c) => ({
     label: categoryLabel(c.category),
     href: `${base}/products?category=${encodeURIComponent(c.category)}`,
   }));
+  const links: StorefrontNavLink[] = [];
+  if (categoryLinks.length === 1) {
+    // A dropdown with a single item is just a worse version of the link
+    // itself — only bundle once there's actually more than one to pick from.
+    links.push(categoryLinks[0]);
+  } else if (categoryLinks.length > 1) {
+    links.push({ label: "Categories", href: `${base}/products`, children: categoryLinks });
+  }
   links.push({ label: "Shop all", href: `${base}/products` });
   // A store with nothing published yet gets no "Blog" link — it would only
   // ever lead to an empty page.

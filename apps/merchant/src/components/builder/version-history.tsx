@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { History, Loader2, RotateCcw } from "lucide-react";
+import { useClickOutside } from "@ecomstrait/ui";
 import { listStoreVersions, restoreStoreVersion, type StoreVersion } from "@/lib/builder-actions";
 
 /**
@@ -18,6 +19,7 @@ export function VersionHistory({
   const [open, setOpen] = useState(false);
   const [versions, setVersions] = useState<StoreVersion[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const menuRef = useClickOutside<HTMLDivElement>(open, () => setOpen(false));
 
   async function toggle() {
     const next = !open;
@@ -39,7 +41,7 @@ export function VersionHistory({
   }
 
   return (
-    <div className="relative">
+    <div className="relative" ref={menuRef}>
       <button
         type="button"
         onClick={toggle}

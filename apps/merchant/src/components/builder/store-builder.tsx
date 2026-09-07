@@ -442,6 +442,9 @@ export function StoreBuilder({
     // A theme chosen in the gallery wins over the one EcomAI would infer.
     if (res.theme && !context?.presetTheme) setTheme(res.theme);
     setStage("ready");
+    // Told first, before the generic "Done!" — the merchant needs to know
+    // their earlier selection didn't win before seeing unfamiliar products.
+    if (res.note) pushAi(res.note);
     pushAi(
       `Done! I built "${p.storeName}" with ${res.products?.length ?? 0} products lined up, a matching theme, and SEO. Take a look at the preview — want any tweaks? (e.g. "make it navy", "punchier headline"). When it's ready, set how you want to sell and hit Launch my store — that's when these products actually go out to each supplier's approval queue, not before.`,
     );
@@ -776,9 +779,18 @@ export function StoreBuilder({
   }, [plan?.sections, products]);
 
   const previewNavLinks: StorefrontNavLink[] = useMemo(() => {
-    const links: StorefrontNavLink[] = previewCategoryBands
+    const categoryLinks: StorefrontNavLink[] = previewCategoryBands
       .filter((b) => b.category !== UNCATEGORIZED)
       .map((b) => ({ label: categoryLabel(b.category), href: `/store/preview/products?category=${encodeURIComponent(b.category)}` }));
+    // Same bundling `getStorefrontNav` (the real nav builder) uses — a single
+    // category stays a direct link, more than one collapses into one
+    // "Categories" dropdown entry instead of one tab per category.
+    const links: StorefrontNavLink[] = [];
+    if (categoryLinks.length === 1) {
+      links.push(categoryLinks[0]);
+    } else if (categoryLinks.length > 1) {
+      links.push({ label: "Categories", href: "/store/preview/products", children: categoryLinks });
+    }
     links.push({ label: "Shop all", href: "/store/preview/products" });
     // Same ordering getStorefrontNav (the real nav builder) already uses —
     // Blog only when there's something to show, custom pages last.
