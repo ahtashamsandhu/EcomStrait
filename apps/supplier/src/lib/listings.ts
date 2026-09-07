@@ -1,4 +1,4 @@
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import type { ListingStatus } from "@ecomstrait/db/types";
 import { getMySupplier } from "@/lib/supplier-context";
 

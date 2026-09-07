@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
-import { createAdminClient } from "@ecomstrait/db";
+import { verifyInternalRequest } from "@/lib/secret-compare";
+import { createAdminClient } from "@ecomstrait/db/admin";
+import { withOpenToken } from "@/lib/token-crypto";
 import { pushProductsToShopify } from "@/lib/shopify";
 import { productImage } from "@/lib/catalog";
 
@@ -10,19 +12,18 @@ export const runtime = "nodejs";
  *
  * The supplier portal calls this when a supplier approves a listing: Shopify
  * credentials and the GraphQL client live here, so this app stays the only one
- * that talks to Shopify. Authenticated by the same shared secret the Shopify
- * app uses for /api/shopify/connect.
+ * that talks to Shopify. Authenticated by a signed, timestamped request from
+ * the supplier app (see verifyInternalRequest).
  */
 export async function POST(req: Request) {
-  const secret = process.env.SHOPIFY_APP_SHARED_SECRET;
-  const provided = req.headers.get("x-ecomstrait-secret");
-  if (!secret || provided !== secret) {
+  const raw = await req.text();
+  if (!verifyInternalRequest(req, raw)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   let body: { storeId?: string; productId?: string };
   try {
-    body = await req.json();
+    body = JSON.parse(raw);
   } catch {
     return NextResponse.json({ error: "Invalid body" }, { status: 400 });
   }
@@ -62,11 +63,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ pushed: false, reason: "not_provisioned" });
   }
 
-  const { data: shop } = await admin
+  const { data: rawShop } = await admin
     .from("shopify_stores")
     .select("shop_domain, access_token")
     .eq("id", store.shopify_store_id)
     .maybeSingle();
+  const shop = withOpenToken(rawShop);
   if (!shop?.access_token) {
     return NextResponse.json({ pushed: false, reason: "no_token" });
   }

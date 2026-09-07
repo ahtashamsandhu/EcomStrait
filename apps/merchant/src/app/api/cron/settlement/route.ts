@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { runWeeklySettlement } from "@/lib/settlement";
 
 export const runtime = "nodejs";

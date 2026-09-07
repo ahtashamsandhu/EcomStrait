@@ -2,7 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@ecomstrait/auth/server";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
+import { openToken, withOpenToken } from "@/lib/token-crypto";
 import { productImage } from "@/lib/catalog";
 import { flagReconnectNeeded, alertPoolEmpty } from "@/lib/ops-alert";
 import { shopifyGraphql } from "@/lib/shopify";
@@ -122,7 +123,7 @@ async function claimPoolStore(
     // A cheap probe beats claiming a store and failing three calls later.
     let alive = false;
     try {
-      const res = await shopifyGraphql(candidate.shop_domain, candidate.access_token!)<{
+      const res = await shopifyGraphql(candidate.shop_domain, openToken(candidate.access_token) ?? "")<{
         data?: { shop?: { name?: string } };
       }>(`{ shop { name } }`);
       alive = Boolean(res.data?.shop?.name);
@@ -195,14 +196,17 @@ export async function provisionShopifyStore(storeId: string): Promise<{ error?: 
     const claimed = await claimPoolStore(admin, user.id);
     if ("error" in claimed) return { error: claimed.error };
     sid = claimed.id;
-    await supabase.from("stores").update({ shopify_store_id: sid }).eq("id", storeId);
+    // Attaching a shop is platform work (a session may only ever detach one —
+    // see guard_stores); ownership of `storeId` was verified above.
+    await admin.from("stores").update({ shopify_store_id: sid }).eq("id", storeId).eq("user_id", user.id);
   }
 
-  const { data: shopRow } = await admin
+  const { data: rawShopRow } = await admin
     .from("shopify_stores")
     .select("shop_domain, access_token")
     .eq("id", sid)
     .maybeSingle();
+  const shopRow = withOpenToken(rawShopRow);
   if (!shopRow?.access_token) return { error: "That Shopify store has no access token." };
 
   // Build the product list from the store's catalog — supplier-approved only.
@@ -361,11 +365,12 @@ export async function resyncShopifyTheme(storeId: string): Promise<{ error?: str
   const admin = createAdminClient();
   if (!admin) return { error: "Server not configured." };
 
-  const { data: shopRow } = await admin
+  const { data: rawShopRow } = await admin
     .from("shopify_stores")
     .select("shop_domain, access_token, theme_id")
     .eq("id", store.shopify_store_id)
     .maybeSingle();
+  const shopRow = withOpenToken(rawShopRow);
   if (!shopRow?.access_token) return { error: "That Shopify store has no access token." };
   if (!shopRow.theme_id) {
     return {
@@ -428,11 +433,12 @@ export async function syncProductsToShopify(
   const admin = createAdminClient();
   if (!admin) return { error: "Server not configured." };
 
-  const { data: shopRow } = await admin
+  const { data: rawShopRow } = await admin
     .from("shopify_stores")
     .select("shop_domain, access_token")
     .eq("id", store.shopify_store_id)
     .maybeSingle();
+  const shopRow = withOpenToken(rawShopRow);
   if (!shopRow?.access_token) return { error: "That Shopify store has no access token." };
 
   // A stale token otherwise surfaces as a raw Shopify error with no next step.
@@ -627,11 +633,12 @@ export async function getStoreReadiness(
   const admin = createAdminClient();
   if (!admin) return { error: "Server not configured." };
 
-  const { data: shopRow } = await admin
+  const { data: rawShopRow } = await admin
     .from("shopify_stores")
     .select("shop_domain, access_token, theme_id")
     .eq("id", store.shopify_store_id)
     .maybeSingle();
+  const shopRow = withOpenToken(rawShopRow);
   if (!shopRow?.access_token) return { error: "That Shopify store has no access token." };
 
   const shop = shopRow.shop_domain;

@@ -1,5 +1,5 @@
 import "server-only";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { decideRestock, requestApproval } from "@ecomstrait/ai";
 import { alertRestockRecommended } from "@/lib/ops-alert";
 import type { SoldItem } from "@/lib/order-sink";

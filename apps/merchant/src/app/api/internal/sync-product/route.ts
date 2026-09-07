@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { verifyInternalRequest } from "@/lib/secret-compare";
 import { propagateProduct, cascadeSupplierPrice } from "@/lib/product-propagation";
 
 export const runtime = "nodejs";
@@ -15,8 +16,8 @@ export const maxDuration = 60;
  * treat this as best-effort and never block a save on it.
  */
 export async function POST(req: Request) {
-  const secret = process.env.SHOPIFY_APP_SHARED_SECRET;
-  if (!secret || req.headers.get("x-ecomstrait-secret") !== secret) {
+  const raw = await req.text();
+  if (!verifyInternalRequest(req, raw)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -31,7 +32,7 @@ export async function POST(req: Request) {
     previousPrice?: number | null;
   };
   try {
-    body = await req.json();
+    body = JSON.parse(raw);
   } catch {
     return NextResponse.json({ error: "Invalid body" }, { status: 400 });
   }

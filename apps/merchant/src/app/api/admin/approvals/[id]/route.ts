@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { resolveApproval, type Approval } from "@ecomstrait/ai";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { resolveStoreCredentials } from "@/lib/mcp/resolve-store";
 import { setShopifyProductPrice, setShopifyProductStatus } from "@/lib/shopify";
 

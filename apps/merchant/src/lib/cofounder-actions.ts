@@ -1,13 +1,30 @@
 "use server";
 
 import { createClient } from "@ecomstrait/auth/server";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { getOrComputeSnapshot, loadChatThread, appendChatTurns } from "@ecomstrait/ai";
 import { getMerchantSnapshot, summarizeMerchantForAdvisor, type MerchantSnapshot } from "@/lib/cofounder-snapshot";
 import type { CoFounderTurn } from "@/lib/cofounder-ai";
 import { runCofounderOrchestrator } from "@/lib/agents/cofounder-orchestrator";
 import { getEntitlements, assertTokenBudget, recordTokenUsage } from "@/lib/entitlements";
 import { PLAN_ENTITLEMENTS } from "@ecomstrait/db";
+
+const MAX_HISTORY_TURNS = 30;
+const MAX_TURN_CHARS = 8000;
+
+/** See the supplier app's cofounder-actions.ts: only user/assistant turns, capped, reach the prompt. */
+function sanitizeHistory(raw: unknown): CoFounderTurn[] {
+  if (!Array.isArray(raw)) return [];
+  const turns: CoFounderTurn[] = [];
+  for (const t of raw) {
+    if (!t || typeof t !== "object") continue;
+    const { role, content } = t as { role?: unknown; content?: unknown };
+    if ((role !== "user" && role !== "assistant") || typeof content !== "string") continue;
+    turns.push({ role, content: content.slice(0, MAX_TURN_CHARS) });
+  }
+  return turns.slice(-MAX_HISTORY_TURNS);
+}
+
 
 /** Recomputing revenue/orders/customers/traffic on every message was real,
  *  repeated work — see snapshot-cache.ts. Business data moves fast enough
@@ -72,7 +89,7 @@ export async function askCoFounderAction(
     tenantId: user.id,
     businessName: profile?.full_name || "your business",
     snapshot: digest,
-    history,
+    history: sanitizeHistory(history),
     message: text,
   });
   await recordTokenUsage(result.tokensUsed);

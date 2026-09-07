@@ -1,5 +1,6 @@
 import "server-only";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
+import { withOpenToken } from "@/lib/token-crypto";
 import { alertListingBelowCost } from "@/lib/ops-alert";
 import { productImage } from "@/lib/catalog";
 import {
@@ -74,7 +75,7 @@ export async function propagateProduct(
     .from("shopify_stores")
     .select("id, shop_domain, access_token")
     .in("id", shopIds);
-  const shopById = new Map((shops ?? []).map((s) => [s.id, s]));
+  const shopById = new Map((shops ?? []).map((s) => [s.id, withOpenToken(s)!]));
 
   const available = Math.max(0, (product.stock ?? 0) - (product.reserved ?? 0));
   // A drafted product must disappear from every storefront selling it.

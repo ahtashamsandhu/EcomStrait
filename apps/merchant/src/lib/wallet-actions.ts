@@ -2,8 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@ecomstrait/auth/server";
-import { createAdminClient } from "@ecomstrait/db";
-import { creditWallet, releaseHeldOrders, earmarkPayablesForPayout } from "@ecomstrait/db/wallet";
+import { createAdminClient } from "@ecomstrait/db/admin";
+import { creditWallet, releaseHeldOrders } from "@ecomstrait/db/wallet";
 import { getStripe, merchantUrl } from "@/lib/stripe";
 
 /**
@@ -136,58 +136,28 @@ export async function requestPayout(input: {
     return { error: "Account holder name, bank name, and account number are all required." };
   }
 
-  const { data: existing } = await supabase
-    .from("payout_requests")
-    .select("id")
-    .eq("account_type", "merchant")
-    .eq("account_id", user.id)
-    .eq("status", "pending")
-    .maybeSingle();
-  if (existing) return { error: "You already have a withdrawal request pending review." };
-
-  // Only pending, not-already-held rows are up for grabs — an admin hold or
-  // another open request has first claim on the rest.
-  const { data: available } = await supabase
-    .from("payable_ledger")
-    .select("id, amount")
-    .eq("account_type", "merchant")
-    .eq("account_id", user.id)
-    .eq("status", "pending")
-    .eq("held", false)
-    .order("created_at", { ascending: true });
-  const rows = available ?? [];
-  const availableTotal = rows.reduce((s, r) => s + r.amount, 0);
-  if (availableTotal <= 0) return { error: "Nothing pending to withdraw yet." };
-  if (requested > availableTotal) return { error: `You can withdraw up to $${availableTotal.toFixed(2)}.` };
-
-  const earmarkIds: string[] = [];
-  let covered = 0;
-  for (const row of rows) {
-    if (covered >= requested) break;
-    earmarkIds.push(row.id);
-    covered += row.amount;
+  // Everything below happens in one database transaction: the "one pending
+  // request" check, the available-balance sum, the insert and the earmarking
+  // of the exact ledger rows it covers. Doing it here in steps let two
+  // simultaneous submissions both pass the checks and both earmark the same
+  // money, and a direct PostgREST insert skipped the checks entirely.
+  const { data, error } = await supabase.rpc("request_payout", {
+    p_account_type: "merchant",
+    p_amount: requested,
+    p_bank_account_name: bankAccountName,
+    p_bank_name: bankName,
+    p_bank_account_number: bankAccountNumber,
+    p_bank_routing_code: input.bankRoutingCode?.trim() || null,
+    p_note: input.note?.trim() || null,
+  });
+  if (error) {
+    // Our function raises plain-English messages; anything else is internal.
+    const internal = /violates|relation|column|constraint|permission denied/i.test(error.message);
+    if (internal) console.error("[wallet] request_payout failed:", error);
+    return { error: internal ? "Couldn't submit the request." : error.message };
   }
-
-  const { data: inserted, error } = await supabase
-    .from("payout_requests")
-    .insert({
-      account_type: "merchant",
-      account_id: user.id,
-      amount: covered,
-      bank_account_name: bankAccountName,
-      bank_name: bankName,
-      bank_account_number: bankAccountNumber,
-      bank_routing_code: input.bankRoutingCode?.trim() || null,
-      note: input.note?.trim() || null,
-    })
-    .select("id")
-    .single();
-  if (error || !inserted) return { error: error?.message ?? "Couldn't submit the request." };
-
-  const admin = createAdminClient();
-  if (!admin) return { error: "Database isn't configured." };
-  await earmarkPayablesForPayout(admin, earmarkIds, inserted.id);
+  const row = Array.isArray(data) ? data[0] : null;
 
   revalidatePath("/wallet");
-  return { amount: covered };
+  return { amount: row ? Number(row.amount) : requested };
 }

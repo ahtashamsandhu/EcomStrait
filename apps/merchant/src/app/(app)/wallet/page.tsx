@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Wallet as WalletIcon, Clock, HandCoins, ArrowUpRight, ArrowDownLeft, Receipt } from "lucide-react";
 import { cn } from "@ecomstrait/ui";
 import { createClient } from "@ecomstrait/auth/server";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { getWalletBalance } from "@ecomstrait/db/wallet";
 import type { WalletTransactionKind, PayoutRequestStatus } from "@ecomstrait/db";
 import { WalletTopupForm } from "@/components/wallet/topup-form";

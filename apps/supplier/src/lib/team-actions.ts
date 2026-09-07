@@ -2,9 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@ecomstrait/auth/server";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { getSupplierContext } from "@/lib/supplier-context";
 import { sendStoreOwnerEmail, escapeHtml } from "@/lib/notify";
+
+const MAX_OPEN_INVITES = 20;
 
 /** Link pending staff invitations addressed to the signed-in user's email. */
 export async function claimInvites(): Promise<void> {
@@ -13,6 +15,10 @@ export async function claimInvites(): Promise<void> {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user?.email) return;
+  // The invite was addressed to an email; only an account that has proven
+  // it owns that address may take the seat. With confirmations switched off
+  // in Supabase, anyone could sign up as the invitee's address and join.
+  if (!user.email_confirmed_at) return;
   const admin = createAdminClient();
   if (!admin) return;
   await admin
@@ -30,7 +36,18 @@ export async function inviteMember(email: string): Promise<{ error?: string }> {
   if (!ctx.isOwner) return { error: "Only the owner can manage the team." };
 
   const clean = email.trim().toLowerCase();
-  if (!clean.includes("@")) return { error: "Enter a valid email." };
+  if (!clean.includes("@") || clean.length > 254) return { error: "Enter a valid email." };
+
+  // Each invite sends an email to an address the caller typed; cap how many
+  // can sit open so the form can't be used as a mail cannon.
+  const { count } = await ctx.supabase
+    .from("supplier_members")
+    .select("id", { count: "exact", head: true })
+    .eq("supplier_id", ctx.supplierId)
+    .eq("status", "invited");
+  if ((count ?? 0) >= MAX_OPEN_INVITES) {
+    return { error: `You have ${MAX_OPEN_INVITES} invitations waiting already — revoke one first.` };
+  }
 
   const { error } = await ctx.supabase
     .from("supplier_members")

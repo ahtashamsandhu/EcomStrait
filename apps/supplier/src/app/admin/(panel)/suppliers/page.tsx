@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { ArrowRight } from "lucide-react";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import type { SupplierStatus } from "@ecomstrait/db/types";
 import { SearchBar } from "@/components/app/search-bar";
 import { Pagination } from "@/components/app/pagination";

@@ -1,5 +1,6 @@
 import "server-only";
-import type { createAdminClient, TrafficSource } from "@ecomstrait/db";
+import type { createAdminClient } from "@ecomstrait/db/admin";
+import type { TrafficSource } from "@ecomstrait/db";
 
 type Admin = NonNullable<ReturnType<typeof createAdminClient>>;
 

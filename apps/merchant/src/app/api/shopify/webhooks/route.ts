@@ -1,10 +1,10 @@
 import { NextResponse, after } from "next/server";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { verifyShopifyHmac } from "@/lib/shopify";
-import { recordCustomerOrder, type SoldItem } from "@/lib/order-sink";
+import { recordCustomerOrder, reverseCustomerOrder, type SoldItem } from "@/lib/order-sink";
 import { checkRestockAfterSale } from "@/lib/restock-check";
 
-type ShopifyLine = { title: string; quantity: number; price: string; sku?: string };
+type ShopifyLine = { title?: string | null; quantity: number; price: string; sku?: string | null };
 type ShopifyOrder = {
   id: number;
   line_items: ShopifyLine[];
@@ -14,7 +14,11 @@ type ShopifyOrder = {
   shipping_address?: Record<string, string | null>;
   financial_status?: string;
   payment_gateway_names?: string[];
+  test?: boolean;
+  cancelled_at?: string | null;
 };
+
+const PAID_STATUSES = new Set(["paid", "partially_paid"]);
 
 /**
  * Shopify has no explicit "is this COD" flag. A merchant-enabled Cash on
@@ -55,11 +59,30 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid HMAC" }, { status: 401 });
   }
 
-  // Only orders/create matters for the fulfilment loop right now. Ack the rest.
-  if (topic !== "orders/create" || !shop) return NextResponse.json({ ok: true });
-
+  if (!shop) return NextResponse.json({ ok: true });
   const admin = createAdminClient();
   if (!admin) return NextResponse.json({ ok: true });
+
+  if (topic === "orders/cancelled") {
+    const cancelled = JSON.parse(raw) as ShopifyOrder;
+    if (!cancelled.test) {
+      await reverseCustomerOrder(admin, `shopify:${cancelled.id}`, "Shopify order cancelled");
+    }
+    return NextResponse.json({ ok: true });
+  }
+
+  // orders/create fires for every order, paid or not; orders/paid fires once
+  // the money is actually in. A prepaid order is recorded (and the merchant's
+  // wallet debited) only from a paid state — an abandoned "pending" checkout
+  // or a manual-payment order must never charge anyone. COD orders are
+  // pending by definition and are recorded on create. Test orders never are.
+  if (topic !== "orders/create" && topic !== "orders/paid") return NextResponse.json({ ok: true });
+  const order = JSON.parse(raw) as ShopifyOrder;
+  if (order.test || order.cancelled_at) return NextResponse.json({ ok: true });
+  const paymentType = derivePaymentType(order);
+  if (paymentType === "prepaid" && !PAID_STATUSES.has(order.financial_status ?? "")) {
+    return NextResponse.json({ ok: true });
+  }
 
   // shop → dev-store pool row → the merchant's store
   const { data: pool } = await admin.from("shopify_stores").select("id").eq("shop_domain", shop).maybeSingle();
@@ -76,15 +99,15 @@ export async function POST(req: Request) {
   const byId = new Map((prods ?? []).map((p) => [p.id, p]));
   const byTitle = new Map((prods ?? []).map((p) => [p.title.toLowerCase().trim(), p]));
 
-  const order = JSON.parse(raw) as ShopifyOrder;
   const items: SoldItem[] = (order.line_items ?? []).map((li) => {
+    const title = (li.title ?? "").trim();
     // We push products with sku = our product id, so match by SKU first.
-    const match = (li.sku && byId.get(li.sku)) || byTitle.get(li.title.toLowerCase().trim());
+    const match = (li.sku && byId.get(li.sku)) || byTitle.get(title.toLowerCase());
     return {
       product_id: match?.id ?? null,
       supplier_id: match?.supplier_id ?? null,
-      name: li.title,
-      quantity: li.quantity,
+      name: title || "Product",
+      quantity: Math.max(1, Math.trunc(Number(li.quantity) || 1)),
       unit_price: li.price ? Number(li.price) : null,
     };
   });
@@ -94,7 +117,7 @@ export async function POST(req: Request) {
   await recordCustomerOrder(admin, {
     storeId: store.id,
     externalId: `shopify:${order.id}`,
-    paymentType: derivePaymentType(order),
+    paymentType,
     customerName: name,
     customerEmail: order.customer?.email ?? order.email ?? null,
     // Prefer the shipping address's own phone (most relevant to delivery),

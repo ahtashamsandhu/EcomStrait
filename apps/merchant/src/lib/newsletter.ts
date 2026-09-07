@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 
 /**
  * Storefront newsletter signups, via Resend's Audience/Contacts API — the

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import { createAdminClient, PROMO_USER_LIMIT } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
+import { PROMO_USER_LIMIT } from "@ecomstrait/db";
 import type { ShopifyStoreStatus } from "@ecomstrait/db/types";
 import { StorefrontPasswordField } from "@/components/admin/storefront-password-field";
 import { TransferControl } from "@/components/admin/transfer-control";

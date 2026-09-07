@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { ArrowLeft, Check, Circle, FileText } from "lucide-react";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import type { SupplierVerification } from "@ecomstrait/db/types";
 import { DOCUMENTS } from "@/lib/onboarding";
 import { AdminActions } from "@/components/admin/admin-actions";

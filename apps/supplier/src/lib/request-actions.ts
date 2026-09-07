@@ -4,9 +4,14 @@ import { revalidatePath } from "next/cache";
 import type { RequestStatus } from "@ecomstrait/db/types";
 import { createClient } from "@ecomstrait/auth/server";
 import { getSupplierContext } from "@/lib/supplier-context";
+import { friendlyError } from "@/lib/errors";
 import { sendStoreOwnerEmail, escapeHtml } from "@/lib/notify";
 
 type Sb = Awaited<ReturnType<typeof createClient>>;
+
+const REQUEST_STATUSES = new Set<string>(["new", "accepted", "declined", "proposed", "fulfilled"]);
+/** Mirrors the CHECK on request_messages.body. */
+const MAX_MESSAGE = 10_000;
 
 /** Create an Order from an accepted request, copying store info + line items. */
 async function createOrderFromRequest(
@@ -75,6 +80,10 @@ export async function setRequestStatus(
 ): Promise<{ error?: string }> {
   const ctx = await getSupplierContext();
   if ("error" in ctx) return ctx;
+  if (!REQUEST_STATUSES.has(status)) return { error: "Invalid status." };
+  if (options?.message && options.message.length > MAX_MESSAGE) {
+    return { error: `Messages are limited to ${MAX_MESSAGE} characters.` };
+  }
 
   const { data: req } = await ctx.supabase
     .from("product_requests")
@@ -89,7 +98,7 @@ export async function setRequestStatus(
     .update({ status })
     .eq("id", requestId)
     .eq("supplier_id", ctx.supplierId);
-  if (error) return { error: error.message };
+  if (error) return { error: friendlyError(error) };
 
   // Accepting a request creates an Order to fulfil (once).
   if (status === "accepted") {
@@ -140,6 +149,7 @@ export async function addRequestMessage(
 
   const text = body.trim();
   if (!text) return { error: "Message is empty." };
+  if (text.length > MAX_MESSAGE) return { error: `Messages are limited to ${MAX_MESSAGE} characters.` };
 
   const { data: req } = await ctx.supabase
     .from("product_requests")
@@ -152,7 +162,7 @@ export async function addRequestMessage(
   const { error } = await ctx.supabase
     .from("request_messages")
     .insert({ request_id: requestId, sender: "supplier", body: text });
-  if (error) return { error: error.message };
+  if (error) return { error: friendlyError(error) };
 
   if (req.store_owner_email) {
     await sendStoreOwnerEmail({

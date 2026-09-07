@@ -7,6 +7,36 @@ import { getSupplierAnalytics, summarizeCatalogForAdvisor } from "@/lib/analytic
 import { askCoFounder, type CoFounderTurn } from "@/lib/cofounder-ai";
 import { assertTokenBudget, recordTokenUsage } from "@/lib/entitlements";
 
+const MAX_HISTORY_TURNS = 30;
+const MAX_TURN_CHARS = 8000;
+
+/**
+ * The chat client replays its own transcript as `history`. Only the shape the
+ * model is meant to see gets through: user/assistant roles, capped length,
+ * capped count. Anything else (a forged "system" turn, a megabyte of text)
+ * is dropped before it reaches the prompt.
+ */
+function sanitizeHistory(raw: unknown): CoFounderTurn[] {
+  if (!Array.isArray(raw)) return [];
+  const turns: CoFounderTurn[] = [];
+  for (const t of raw) {
+    if (!t || typeof t !== "object") continue;
+    const { role, content } = t as { role?: unknown; content?: unknown };
+    if ((role !== "user" && role !== "assistant") || typeof content !== "string") continue;
+    const turn: CoFounderTurn = { role, content: content.slice(0, MAX_TURN_CHARS) };
+    const extra = t as { reasoningContent?: unknown; providerSpecificFields?: unknown };
+    if (role === "assistant" && typeof extra.reasoningContent === "string") {
+      turn.reasoningContent = extra.reasoningContent.slice(0, MAX_TURN_CHARS);
+    }
+    if (role === "assistant" && extra.providerSpecificFields && typeof extra.providerSpecificFields === "object") {
+      turn.providerSpecificFields = extra.providerSpecificFields as Record<string, unknown>;
+    }
+    turns.push(turn);
+  }
+  return turns.slice(-MAX_HISTORY_TURNS);
+}
+
+
 export async function askCoFounderAction(
   history: CoFounderTurn[],
   message: string,
@@ -58,7 +88,7 @@ export async function askCoFounderAction(
   const snapshot = snapshotLines.filter(Boolean).join("\n");
 
   const text = message.trim();
-  const result = await askCoFounder(supplier?.business_name || "your business", snapshot, history, text);
+  const result = await askCoFounder(supplier?.business_name || "your business", snapshot, sanitizeHistory(history), text);
   await recordTokenUsage(result.tokensUsed);
   await appendChatTurns({
     tenantId: ctx.supplierId,

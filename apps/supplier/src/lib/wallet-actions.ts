@@ -1,10 +1,11 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { createAdminClient } from "@ecomstrait/db";
-import { creditWallet, releaseHeldOrders, earmarkPayablesForPayout } from "@ecomstrait/db/wallet";
+import { createAdminClient } from "@ecomstrait/db/admin";
+import { creditWallet, releaseHeldOrders } from "@ecomstrait/db/wallet";
 import { getStripe, supplierUrl } from "@/lib/stripe";
 import { getSupplierContext } from "@/lib/supplier-context";
+import { friendlyError } from "@/lib/errors";
 
 /**
  * Creates a Stripe Checkout session that credits the caller's supplier
@@ -126,58 +127,25 @@ export async function requestPayout(input: {
     return { error: "Account holder name, bank name, and account number are all required." };
   }
 
-  const { data: existing } = await ctx.supabase
-    .from("payout_requests")
-    .select("id")
-    .eq("account_type", "supplier")
-    .eq("account_id", ctx.supplierId)
-    .eq("status", "pending")
-    .maybeSingle();
-  if (existing) return { error: "You already have a withdrawal request pending review." };
+  if (!ctx.isOwner) return { error: "Only the account owner can withdraw funds." };
 
-  // Only pending, not-already-held rows are up for grabs — an admin hold or
-  // another open request has first claim on the rest.
-  const { data: available } = await ctx.supabase
-    .from("payable_ledger")
-    .select("id, amount")
-    .eq("account_type", "supplier")
-    .eq("account_id", ctx.supplierId)
-    .eq("status", "pending")
-    .eq("held", false)
-    .order("created_at", { ascending: true });
-  const rows = available ?? [];
-  const availableTotal = rows.reduce((s, r) => s + r.amount, 0);
-  if (availableTotal <= 0) return { error: "Nothing pending to withdraw yet." };
-  if (requested > availableTotal) return { error: `You can withdraw up to $${availableTotal.toFixed(2)}.` };
-
-  const earmarkIds: string[] = [];
-  let covered = 0;
-  for (const row of rows) {
-    if (covered >= requested) break;
-    earmarkIds.push(row.id);
-    covered += row.amount;
-  }
-
-  const { data: inserted, error } = await ctx.supabase
-    .from("payout_requests")
-    .insert({
-      account_type: "supplier",
-      account_id: ctx.supplierId,
-      amount: covered,
-      bank_account_name: bankAccountName,
-      bank_name: bankName,
-      bank_account_number: bankAccountNumber,
-      bank_routing_code: input.bankRoutingCode?.trim() || null,
-      note: input.note?.trim() || null,
-    })
-    .select("id")
-    .single();
-  if (error || !inserted) return { error: error?.message ?? "Couldn't submit the request." };
-
-  const admin = createAdminClient();
-  if (!admin) return { error: "Database isn't configured." };
-  await earmarkPayablesForPayout(admin, earmarkIds, inserted.id);
+  // Everything below happens in one database transaction: the "one pending
+  // request" check, the available-balance sum, the insert and the earmarking
+  // of the exact ledger rows it covers. Doing it here in steps let two
+  // simultaneous submissions both pass the checks and both earmark the same
+  // money.
+  const { data, error } = await ctx.supabase.rpc("request_payout", {
+    p_account_type: "supplier",
+    p_amount: requested,
+    p_bank_account_name: bankAccountName,
+    p_bank_name: bankName,
+    p_bank_account_number: bankAccountNumber,
+    p_bank_routing_code: input.bankRoutingCode?.trim() || null,
+    p_note: input.note?.trim() || null,
+  });
+  if (error) return { error: friendlyError(error, "Couldn't submit the request.") };
+  const row = Array.isArray(data) ? data[0] : null;
 
   revalidatePath("/wallet");
-  return { amount: covered };
+  return { amount: row ? Number(row.amount) : requested };
 }

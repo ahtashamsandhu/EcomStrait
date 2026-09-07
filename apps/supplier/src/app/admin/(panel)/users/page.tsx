@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import type { UserRole } from "@ecomstrait/db/types";
 import { getUser } from "@ecomstrait/auth/session";
 import { RoleSelect } from "@/components/admin/role-select";

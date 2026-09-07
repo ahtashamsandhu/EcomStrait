@@ -2,7 +2,8 @@
 
 import { redirect } from "next/navigation";
 import { createClient } from "@ecomstrait/auth/server";
-import { createAdminClient, type StoreType, type StoreStatus } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
+import type { StoreType, StoreStatus } from "@ecomstrait/db";
 import { loadChatThread, appendChatTurns } from "@ecomstrait/ai";
 import { revalidatePath } from "next/cache";
 import { assertTokenBudget, recordTokenUsage, assertCanCreateStore } from "@/lib/entitlements";

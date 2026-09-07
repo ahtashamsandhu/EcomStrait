@@ -1,5 +1,5 @@
 import "server-only";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { deleteFromProvider } from "@/lib/media";
 import { DRAFT_TTL_DAYS } from "@/lib/store-status";
 

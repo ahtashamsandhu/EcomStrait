@@ -1,7 +1,7 @@
 "use server";
 
 import { createClient } from "@ecomstrait/auth/server";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import type { PlanTier } from "@ecomstrait/db";
 import { getStripe, PRICE_IDS, merchantUrl } from "@/lib/stripe";
 import { ensureSubscription } from "@/lib/subscription";

@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@ecomstrait/auth/server";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { wipeStoreContent } from "@/lib/shopify";
 import type { ListingStatus } from "@ecomstrait/db/types";
 
@@ -84,17 +84,29 @@ export async function requestListing(
   if (!product) return { error: "Product not found." };
   if (product.status !== "published") return { error: "That product isn't published." };
 
-  const { error } = await supabase.from("store_products").upsert(
-    {
-      store_id: storeId,
-      product_id: productId,
-      supplier_id: product.supplier_id,
-      price: product.retail_price,
-      status: "pending" as ListingStatus,
-    },
-    { onConflict: "store_id,product_id" },
-  );
-  if (error) return { error: error.message };
+  // Insert-only. This used to upsert with status "pending" and the retail
+  // price, so asking twice reset an approved listing and wiped the
+  // merchant's own price. An existing row is simply reported back.
+  const { data: current } = await supabase
+    .from("store_products")
+    .select("status")
+    .eq("store_id", storeId)
+    .eq("product_id", productId)
+    .maybeSingle();
+  if (current) return { status: current.status as ListingStatus };
+
+  const { error } = await supabase.from("store_products").insert({
+    store_id: storeId,
+    product_id: productId,
+    supplier_id: product.supplier_id,
+    price: product.retail_price,
+    status: "pending" as ListingStatus,
+  });
+  if (error) {
+    if (error.code === "23505") return { status: "pending" };
+    console.error("[listings] request failed:", error);
+    return { error: "Couldn't send the listing request. Please try again." };
+  }
 
   revalidatePath("/find-suppliers");
   revalidatePath("/inventory");

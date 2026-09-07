@@ -1,5 +1,6 @@
 import "server-only";
 import { merchantBaseUrl } from "@/lib/merchant-url";
+import { signedInternalHeaders } from "@/lib/internal-request";
 
 /**
  * Tell the merchant app to re-push a product to every Shopify store selling it.
@@ -32,14 +33,15 @@ export async function syncProductToStores(
   if (!ids.length) return;
 
   const base = merchantBaseUrl();
-  const secret = process.env.ECOMSTRAIT_SHARED_SECRET;
-  if (!base || !secret) return;
+  const body = JSON.stringify({ productIds: ids, ...opts });
+  const headers = signedInternalHeaders(body);
+  if (!base || !headers) return;
 
   try {
     const res = await fetch(`${base}/api/internal/sync-product`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-ecomstrait-secret": secret },
-      body: JSON.stringify({ productIds: ids, ...opts }),
+      headers,
+      body,
       cache: "no-store",
     });
     if (!res.ok) {

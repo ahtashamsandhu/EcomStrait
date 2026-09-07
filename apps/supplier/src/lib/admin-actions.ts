@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { getProfile } from "@ecomstrait/auth/session";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import type { UserRole } from "@ecomstrait/db/types";
 
 /**

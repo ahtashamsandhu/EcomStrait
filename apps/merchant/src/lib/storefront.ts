@@ -1,4 +1,4 @@
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { isPublicStatus } from "@/lib/store-status";
 import { productImage } from "@/lib/catalog";
 import type { StorePlan } from "@/lib/ecomai";

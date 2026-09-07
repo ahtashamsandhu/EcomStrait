@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Loader2 } from "lucide-react";
 import { createClient } from "@ecomstrait/auth/client";
 import { Button, PasswordField } from "@/components/ui";
+import { clearPasswordResetPending } from "@/lib/actions";
 
 export function ResetPasswordForm() {
   const router = useRouter();
@@ -43,6 +44,9 @@ export function ResetPasswordForm() {
       setStatus("idle");
       return;
     }
+    // Must happen before the redirect below — the middleware guard would
+    // otherwise bounce the very next navigation straight back here.
+    await clearPasswordResetPending();
     router.push("/dashboard");
     router.refresh();
   }

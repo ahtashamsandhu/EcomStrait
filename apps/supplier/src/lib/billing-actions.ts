@@ -1,6 +1,6 @@
 "use server";
 
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import type { PlanTier } from "@ecomstrait/db";
 import { getStripe, PRICE_IDS, supplierUrl } from "@/lib/stripe";
 import { getSupplierContext } from "@/lib/supplier-context";
@@ -15,6 +15,7 @@ export async function createCheckoutSession(
 
   const ctx = await getSupplierContext();
   if ("error" in ctx) return ctx;
+  if (!ctx.isOwner) return { error: "Only the account owner can change the plan." };
 
   const {
     data: { user },
@@ -69,6 +70,7 @@ export async function createPortalSession(): Promise<{ url?: string; error?: str
 
   const ctx = await getSupplierContext();
   if ("error" in ctx) return ctx;
+  if (!ctx.isOwner) return { error: "Only the account owner can manage billing." };
 
   const admin = createAdminClient();
   const { data: sub } = admin

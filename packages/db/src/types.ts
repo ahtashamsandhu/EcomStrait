@@ -955,6 +955,29 @@ export type Database = {
       reverse_cod_deduction: { Args: { p_order_id: string }; Returns: boolean };
       /** service_role only — see the migration. Callable via the admin client. */
       auth_email_exists: { Args: { p_email: string }; Returns: boolean };
+      /** No JWT / service_role / admin profile — see 20260907120100. */
+      is_privileged: { Args: Record<string, never>; Returns: boolean };
+      /** Adds to today's counter for the calling merchant; returns the new total. */
+      increment_token_usage: { Args: { p_tokens: number }; Returns: number };
+      /** Adds to today's counter for a supplier the caller owns / belongs to. */
+      increment_supplier_token_usage: { Args: { p_supplier_id: string; p_tokens: number }; Returns: number };
+      /** Atomic relative stock change (floors at 0) that writes the audit row. Returns the new stock. */
+      adjust_product_stock: { Args: { p_product_id: string; p_delta: number; p_reason?: string | null }; Returns: number };
+      /** Atomic absolute stock set that writes the audit row. Returns the new stock. */
+      set_product_stock: { Args: { p_product_id: string; p_stock: number; p_reason?: string | null }; Returns: number };
+      /** Opens a withdrawal request for the caller's own account, locking the payables it covers. */
+      request_payout: {
+        Args: {
+          p_account_type: WalletAccountType;
+          p_amount: number;
+          p_bank_account_name: string;
+          p_bank_name: string;
+          p_bank_account_number: string;
+          p_bank_routing_code?: string | null;
+          p_note?: string | null;
+        };
+        Returns: { request_id: string; amount: number }[];
+      };
     };
     Enums: { user_role: UserRole };
     CompositeTypes: Record<string, never>;

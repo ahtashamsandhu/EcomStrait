@@ -1,5 +1,5 @@
 import { createClient } from "@ecomstrait/auth/server";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 
 export type CatalogProduct = {
   id: string;
