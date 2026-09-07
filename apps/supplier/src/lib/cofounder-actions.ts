@@ -5,7 +5,7 @@ import { requireApprovedSupplier } from "@/lib/supplier-context";
 import { getSupplierRevenueAnalytics, summarizeForAdvisor } from "@/lib/revenue-analytics";
 import { getSupplierAnalytics, summarizeCatalogForAdvisor } from "@/lib/analytics-data";
 import { askCoFounder, type CoFounderTurn } from "@/lib/cofounder-ai";
-import { assertTokenBudget, recordTokenUsage } from "@/lib/entitlements";
+import { assertTokenBudget, getEntitlements, recordTokenUsage } from "@/lib/entitlements";
 
 const MAX_HISTORY_TURNS = 30;
 const MAX_TURN_CHARS = 8000;
@@ -41,7 +41,14 @@ export async function askCoFounderAction(
   history: CoFounderTurn[],
   message: string,
 ): Promise<
-  | { reply: string; reasoningContent?: string; providerSpecificFields?: Record<string, unknown> }
+  | {
+      reply: string;
+      reasoningContent?: string;
+      providerSpecificFields?: Record<string, unknown>;
+      /** Today's remaining AI budget after this message was charged — the
+       *  chat updates its counter from this instead of waiting for a reload. */
+      tokensRemaining: number;
+    }
   | { error: string; upgrade?: boolean }
 > {
   const ctx = await requireApprovedSupplier();
@@ -90,23 +97,27 @@ export async function askCoFounderAction(
   const text = message.trim();
   const result = await askCoFounder(supplier?.business_name || "your business", snapshot, sanitizeHistory(history), text);
   await recordTokenUsage(result.tokensUsed);
-  await appendChatTurns({
-    tenantId: ctx.supplierId,
-    agent: "supplier_cofounder",
-    threadKey: ctx.supplierId,
-    turns: [
-      { role: "user", content: text },
-      {
-        role: "assistant",
-        content: result.reply,
-        reasoningContent: result.reasoningContent,
-        providerSpecificFields: result.providerSpecificFields,
-      },
-    ],
-  });
+  const [entitlements] = await Promise.all([
+    getEntitlements(),
+    appendChatTurns({
+      tenantId: ctx.supplierId,
+      agent: "supplier_cofounder",
+      threadKey: ctx.supplierId,
+      turns: [
+        { role: "user", content: text },
+        {
+          role: "assistant",
+          content: result.reply,
+          reasoningContent: result.reasoningContent,
+          providerSpecificFields: result.providerSpecificFields,
+        },
+      ],
+    }),
+  ]);
   return {
     reply: result.reply,
     reasoningContent: result.reasoningContent,
     providerSpecificFields: result.providerSpecificFields,
+    tokensRemaining: entitlements.tokensRemaining,
   };
 }

@@ -78,7 +78,7 @@ export default async function AdminSuppliersPage({
       </p>
 
       <div className="mt-6">
-        <SearchBar placeholder="Search business, contact, country…" summary={summary} />
+        <SearchBar placeholder="Search business, person name, country…" summary={summary} />
       </div>
 
       <div className="mt-4 overflow-hidden rounded-2xl border border-ink-100 bg-white">
@@ -91,7 +91,7 @@ export default async function AdminSuppliersPage({
             <thead>
               <tr className="border-b border-ink-100 text-left text-xs text-ink-400">
                 <th className="px-4 py-3 font-medium">Business</th>
-                <th className="hidden px-4 py-3 font-medium sm:table-cell">Contact</th>
+                <th className="hidden px-4 py-3 font-medium sm:table-cell">Person name</th>
                 <th className="hidden px-4 py-3 font-medium md:table-cell">Country</th>
                 <th className="hidden px-4 py-3 font-medium sm:table-cell">Quality</th>
                 <th className="px-4 py-3 font-medium">Status</th>

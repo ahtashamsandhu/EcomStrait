@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import {
   ArrowRight,
   ClipboardList,
@@ -15,6 +16,7 @@ import { createClient } from "@ecomstrait/auth/server";
 import { getMySupplier } from "@/lib/supplier-context";
 import type { SupplierVerification } from "@ecomstrait/db/types";
 import { RETURN_CHECKLIST } from "@/lib/onboarding";
+import { OnboardingToast } from "@/components/onboarding/onboarding-toast";
 
 export const metadata: Metadata = { title: "Dashboard" };
 
@@ -88,6 +90,9 @@ export default async function DashboardPage() {
 
   return (
     <div className="mx-auto max-w-5xl">
+      <Suspense fallback={null}>
+        <OnboardingToast />
+      </Suspense>
       <h1 className="text-2xl font-bold text-ink-950">Welcome{name ? `, ${name}` : ""} 👋</h1>
       <p className="mt-1 text-sm text-ink-500">
         {supplier?.business_name

@@ -84,6 +84,41 @@ export async function requestPasswordReset(
   return { status: "sent" };
 }
 
+export type EmailAvailability =
+  | { status: "available" }
+  | { status: "taken" }
+  | { status: "error"; message: string };
+
+/**
+ * Signup pre-check: is this email already registered on the platform?
+ *
+ * The supplier and merchant apps share one Supabase project, so an address
+ * used for a supplier account is the same auth user in the merchant app. With
+ * email confirmation on, `signUp` for an existing address deliberately looks
+ * like success (anti-enumeration) — the person would be sent to "check your
+ * inbox" for a mail that never comes. The product decision is the opposite:
+ * one email, one account, and say so up front. Runs through the admin client
+ * because `auth_email_exists` is service_role-only; the same per-IP/per-email
+ * throttle as password reset keeps it from being a free enumeration oracle.
+ */
+export async function checkEmailAvailability(rawEmail: string): Promise<EmailAvailability> {
+  const email = rawEmail.trim().toLowerCase();
+  if (!email || !email.includes("@")) return { status: "error", message: "Please enter a valid email address." };
+
+  const admin = createAdminClient();
+  // Without the service key we can't look it up — let signUp decide instead.
+  if (!admin) return { status: "available" };
+
+  const throttled = await lookupThrottled(admin, "signup", email);
+  if (throttled) {
+    return { status: "error", message: "Too many attempts. Please wait a few minutes and try again." };
+  }
+
+  const { data: exists, error } = await admin.rpc("auth_email_exists", { p_email: email });
+  if (error) return { status: "error", message: error.message };
+  return exists ? { status: "taken" } : { status: "available" };
+}
+
 type RateLimitClient = {
   rpc: (
     fn: string,
@@ -92,6 +127,11 @@ type RateLimitClient = {
 };
 
 async function passwordResetThrottled(admin: unknown, email: string): Promise<boolean> {
+  return lookupThrottled(admin, "pwreset", email);
+}
+
+/** Per-IP and per-email throttle for the "does this email exist" lookups. */
+async function lookupThrottled(admin: unknown, kind: "pwreset" | "signup", email: string): Promise<boolean> {
   let ip = "unknown";
   try {
     const h = await headers();
@@ -101,8 +141,8 @@ async function passwordResetThrottled(admin: unknown, email: string): Promise<bo
   }
   const client = admin as RateLimitClient;
   const buckets: [string, number][] = [
-    [`pwreset:ip:${ip}`, 10],
-    [`pwreset:email:${email}`, 5],
+    [`${kind}:ip:${ip}`, 10],
+    [`${kind}:email:${email}`, 5],
   ];
   for (const [bucket, limit] of buckets) {
     try {

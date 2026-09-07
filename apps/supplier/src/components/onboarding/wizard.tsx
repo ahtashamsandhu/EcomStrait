@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, ArrowRight, Loader2, AlertTriangle, Circle } from "lucide-react";
+import { ArrowLeft, ArrowRight, Loader2, AlertTriangle, Circle, Save } from "lucide-react";
 import type { DocumentType } from "@ecomstrait/db/types";
 import { Button } from "@/components/ui";
 import { Stepper, FieldInput } from "@/components/onboarding/fields";
@@ -47,11 +47,31 @@ export function OnboardingWizard({
   const [uploaded, setUploaded] = useState<Record<string, string>>(initialUploaded);
   const [marketingOptIn, setMarketingOptIn] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
-  const [saving, setSaving] = useState(false);
+  // Which action is in flight — the buttons show a spinner only on the one
+  // that was clicked, and every other control locks while it runs.
+  const [busy, setBusy] = useState<"save" | "submit" | null>(null);
+  const saving = busy !== null;
   const [error, setError] = useState<string | null>(null);
 
   function set<K extends keyof SupplierForm>(k: K, v: SupplierForm[K]) {
     setForm((f) => ({ ...f, [k]: v }));
+  }
+
+  /**
+   * Continue only moves between steps in local state; the form is written
+   * to the database on "Save & exit" or on the final submit. The one
+   * exception is a document upload, which needs a suppliers row to attach
+   * to — this creates that row on demand the first time it's needed.
+   */
+  async function ensureSupplierId(): Promise<string | null> {
+    if (supplierId) return supplierId;
+    const res = await saveSupplier({ ...form, onboarding_step: step });
+    if ("error" in res) {
+      setError(res.error);
+      return null;
+    }
+    setSupplierId(res.id);
+    return res.id;
   }
 
   function missingFields(): boolean {
@@ -66,7 +86,7 @@ export function OnboardingWizard({
     return DOCUMENTS.some((d) => d.required && !uploaded[d.type]);
   }
 
-  async function next() {
+  function next() {
     setError(null);
     if ((step === 1 || step === 2 || step === 4) && missingFields()) {
       setError("Please fill in all required fields.");
@@ -76,14 +96,6 @@ export function OnboardingWizard({
       setError("Please upload the required documents.");
       return;
     }
-    setSaving(true);
-    const res = await saveSupplier({ ...form, onboarding_step: step + 1 });
-    setSaving(false);
-    if ("error" in res) {
-      setError(res.error);
-      return;
-    }
-    setSupplierId(res.id);
     setStep((s) => Math.min(s + 1, 5));
   }
 
@@ -92,18 +104,42 @@ export function OnboardingWizard({
     setStep((s) => Math.max(s - 1, 1));
   }
 
+  /** Persist everything entered so far (and the step to resume at), then
+   *  leave for the dashboard, which shows the confirmation toast. */
+  async function saveAndExit() {
+    setError(null);
+    setBusy("save");
+    const res = await saveSupplier({ ...form, onboarding_step: step });
+    if ("error" in res) {
+      setError(res.error);
+      setBusy(null);
+      return;
+    }
+    setSupplierId(res.id);
+    router.push("/dashboard?saved=1");
+  }
+
   async function submit() {
     if (!termsAccepted) {
       setError("Please accept the terms to continue.");
       return;
     }
-    setSaving(true);
+    setBusy("submit");
     setError(null);
+    // Nothing was written on Continue, so the whole form goes down now,
+    // right before the status flips to in_review.
+    const saved = await saveSupplier({ ...form, onboarding_step: 5 });
+    if ("error" in saved) {
+      setError(saved.error);
+      setBusy(null);
+      return;
+    }
+    setSupplierId(saved.id);
     const res = await submitOnboarding({ marketingOptIn });
     // On success the action redirects; only errors return here.
     if (res && "error" in res) {
       setError(res.error);
-      setSaving(false);
+      setBusy(null);
     } else {
       router.refresh();
     }
@@ -172,6 +208,7 @@ export function OnboardingWizard({
             <DocumentsStep
               userId={userId}
               supplierId={supplierId}
+              ensureSupplierId={ensureSupplierId}
               uploaded={uploaded}
               onUploaded={(type: DocumentType, path) =>
                 setUploaded((u) => ({ ...u, [type]: path }))
@@ -257,16 +294,28 @@ export function OnboardingWizard({
             <ArrowLeft className="h-4 w-4" /> Back
           </button>
 
-          <div className="w-40">
-            {step < 5 ? (
-              <Button type="button" onClick={next} disabled={saving}>
-                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <>Continue <ArrowRight className="h-4 w-4" /></>}
-              </Button>
-            ) : (
-              <Button type="button" onClick={submit} disabled={saving}>
-                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : "Submit for review"}
-              </Button>
-            )}
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={saveAndExit}
+              disabled={saving}
+              className="w-auto whitespace-nowrap"
+            >
+              {busy === "save" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              Save &amp; exit
+            </Button>
+            <div className="w-40">
+              {step < 5 ? (
+                <Button type="button" onClick={next} disabled={saving}>
+                  Continue <ArrowRight className="h-4 w-4" />
+                </Button>
+              ) : (
+                <Button type="button" onClick={submit} disabled={saving}>
+                  {busy === "submit" ? <Loader2 className="h-4 w-4 animate-spin" /> : "Submit for review"}
+                </Button>
+              )}
+            </div>
           </div>
         </div>
       </div>

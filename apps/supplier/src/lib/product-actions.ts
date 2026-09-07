@@ -11,6 +11,7 @@ import { syncProductToStores } from "@/lib/sync-stores";
 import { assertCanAddProduct, assertTokenBudget, recordTokenUsage } from "@/lib/entitlements";
 import { friendlyError } from "@/lib/errors";
 import { rateLimit } from "@/lib/rate-limit";
+import { validatePricing } from "@/lib/product-rules";
 
 /** Raw form values (strings from inputs); parsed here into typed columns. */
 export type ProductInput = {
@@ -37,9 +38,7 @@ function num(v?: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Hard ceilings, mirrored by CHECK constraints on `products` (20260907120100). */
-const MAX_PRICE = 10_000_000;
-const MAX_STOCK = 10_000_000;
+/** Text/list ceilings; price and stock ceilings live in product-rules.ts. */
 const MAX_IMAGES = 30;
 const MAX_IMPORT_ROWS = 2000;
 const LIMITS: Record<string, number> = {
@@ -60,7 +59,7 @@ const LIMITS: Record<string, number> = {
  * merchant cost and payable maths; unbounded text bloated every storefront
  * that listed the product.
  */
-function validateProductInput(input: ProductInput, label = "Product"): string | null {
+function validateProductInput(input: ProductInput, label = "Product", requirePrices = false): string | null {
   if (!input || typeof input !== "object") return `${label}: invalid input.`;
   if (!input.title?.trim()) return `${label}: a title is required.`;
   for (const [key, max] of Object.entries(LIMITS)) {
@@ -68,16 +67,8 @@ function validateProductInput(input: ProductInput, label = "Product"): string | 
     if (v != null && typeof v !== "string") return `${label}: ${key} must be text.`;
     if (typeof v === "string" && v.length > max) return `${label}: ${key} is too long (max ${max} characters).`;
   }
-  for (const key of ["wholesale_price", "retail_price", "map_price"] as const) {
-    const raw = input[key];
-    if (raw == null || raw.trim() === "") continue;
-    const n = Number(raw);
-    if (!Number.isFinite(n) || n < 0 || n > MAX_PRICE) return `${label}: ${key.replace("_", " ")} must be between 0 and ${MAX_PRICE}.`;
-  }
-  if (input.stock != null && input.stock.trim() !== "") {
-    const n = Number(input.stock);
-    if (!Number.isFinite(n) || n < 0 || n > MAX_STOCK) return `${label}: stock must be between 0 and ${MAX_STOCK}.`;
-  }
+  const pricing = validatePricing(input, { requirePrices, label });
+  if (pricing) return pricing;
   if (input.status != null && input.status !== "draft" && input.status !== "published") {
     return `${label}: status must be draft or published.`;
   }
@@ -118,7 +109,7 @@ export async function createProduct(
 ): Promise<{ error: string; upgrade?: boolean } | never> {
   const ctx = await requireApprovedSupplier();
   if ("error" in ctx) return ctx;
-  const invalid = validateProductInput(input);
+  const invalid = validateProductInput(input, "Product", true);
   if (invalid) return { error: invalid };
   const limit = await assertCanAddProduct();
   if (!limit.ok) return limit;
@@ -156,7 +147,7 @@ export async function updateProduct(
 ): Promise<{ error: string; upgrade?: boolean } | never> {
   const ctx = await requireApprovedSupplier();
   if ("error" in ctx) return ctx;
-  const invalid = validateProductInput(input);
+  const invalid = validateProductInput(input, "Product", true);
   if (invalid) return { error: invalid };
 
   // Captured before the write: the price cascade needs to know which listings

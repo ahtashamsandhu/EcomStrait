@@ -33,11 +33,12 @@ export default async function CoFounderPage() {
             what to fix first, or how you&apos;re doing.
           </p>
         </div>
-        <span className="text-xs font-medium text-ink-400">
-          {e.tokensRemaining.toLocaleString()} AI tokens left today
-        </span>
       </div>
-      <CoFounderChat businessName={profile?.full_name ?? null} initialMessages={thread.messages} />
+      <CoFounderChat
+        businessName={profile?.full_name ?? null}
+        initialMessages={thread.messages}
+        initialTokensRemaining={e.tokensRemaining}
+      />
     </div>
   );
 }

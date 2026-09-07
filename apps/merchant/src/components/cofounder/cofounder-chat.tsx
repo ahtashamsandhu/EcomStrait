@@ -12,14 +12,19 @@ type Message = CoFounderTurn;
 export function CoFounderChat({
   businessName,
   initialMessages = [],
+  initialTokensRemaining,
 }: {
   businessName: string | null;
+  /** Today's remaining AI budget at page load; every reply carries the new
+   *  figure back and the counter below updates without a reload. */
+  initialTokensRemaining: number;
   /** The persisted thread's last (up to) 30 messages — see
    *  `Docs/prompts/merchant-cofounder-chat.md` — so reopening this chat
    *  continues the conversation instead of starting cold. */
   initialMessages?: Message[];
 }) {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
+  const [tokensRemaining, setTokensRemaining] = useState(initialTokensRemaining);
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [upgradeMsg, setUpgradeMsg] = useState<string | null>(null);
@@ -59,6 +64,7 @@ export function CoFounderChat({
       else setError(res.error);
       return;
     }
+    setTokensRemaining(res.tokensRemaining);
     setMessages((m) => [...m, { role: "assistant", content: res.reply }]);
   }
 
@@ -78,6 +84,11 @@ export function CoFounderChat({
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden rounded-2xl border border-ink-100 bg-white">
+      <div className="flex items-center justify-end border-b border-ink-50 px-4 py-2">
+        <span className="text-xs font-medium text-ink-400" aria-live="polite">
+          {tokensRemaining.toLocaleString()} AI tokens left today
+        </span>
+      </div>
       <div ref={listRef} className="flex-1 space-y-4 overflow-y-auto p-5">
         {messages.length === 0 && (
           <div className="grid h-full place-items-center text-center">

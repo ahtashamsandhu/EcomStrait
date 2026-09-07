@@ -11,11 +11,15 @@ import { recordDocument } from "@/lib/supplier-actions";
 export function DocumentsStep({
   userId,
   supplierId,
+  ensureSupplierId,
   uploaded,
   onUploaded,
 }: {
   userId: string;
   supplierId: string | null;
+  /** Creates the suppliers row if the wizard hasn't saved one yet (Continue
+   *  no longer writes to the database) — a document needs a row to attach to. */
+  ensureSupplierId: () => Promise<string | null>;
   uploaded: Record<string, string>;
   onUploaded: (type: DocumentType, path: string) => void;
 }) {
@@ -23,13 +27,14 @@ export function DocumentsStep({
   const [error, setError] = useState<string | null>(null);
 
   async function handleFile(type: DocumentType, file: File) {
-    if (!supplierId) {
-      setError("Please complete the earlier steps first.");
-      return;
-    }
     setBusy(type);
     setError(null);
     try {
+      const id = supplierId ?? (await ensureSupplierId());
+      if (!id) {
+        setError("Please complete the earlier steps first.");
+        return;
+      }
       const supabase = createClient();
       const ext = file.name.split(".").pop() || "bin";
       // One document per type — a stable path + upsert overwrites on re-upload.
@@ -39,7 +44,7 @@ export function DocumentsStep({
         .upload(path, file, { upsert: true });
       if (upErr) throw upErr;
 
-      const res = await recordDocument({ supplierId, type, storagePath: path });
+      const res = await recordDocument({ supplierId: id, type, storagePath: path });
       if ("error" in res) throw new Error(res.error);
       onUploaded(type, path);
     } catch (e) {

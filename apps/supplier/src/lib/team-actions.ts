@@ -63,7 +63,7 @@ export async function inviteMember(email: string): Promise<{ error?: string }> {
     html: `<p>You've been invited to join a supplier team on EcomStrait.</p><p>Sign in or create an account with <strong>${escapeHtml(clean)}</strong> and you'll be added automatically.</p>`,
   });
 
-  revalidatePath("/settings");
+  revalidatePath("/settings", "layout");
   return {};
 }
 
@@ -80,6 +80,6 @@ export async function removeMember(id: string): Promise<{ error?: string }> {
     .eq("supplier_id", ctx.supplierId);
   if (error) return { error: error.message };
 
-  revalidatePath("/settings");
+  revalidatePath("/settings", "layout");
   return {};
 }

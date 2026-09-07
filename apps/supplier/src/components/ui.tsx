@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff, Info } from "lucide-react";
 import { cn } from "@ecomstrait/ui";
 
 export function Button({
@@ -25,16 +25,58 @@ export function Button({
   );
 }
 
+/** Red asterisk shown next to a required field's label. */
+export function RequiredMark() {
+  return (
+    <span className="ml-0.5 text-red-500" aria-hidden>
+      *
+    </span>
+  );
+}
+
+/**
+ * Small "i" icon that reveals a short explanation on hover or keyboard focus.
+ * Pure CSS (group-hover / focus-within) — no positioning library needed for a
+ * one-line hint next to a form label.
+ */
+export function InfoTip({ text }: { text: string }) {
+  return (
+    <span className="group relative ml-1.5 inline-flex align-middle">
+      <button
+        type="button"
+        aria-label={text}
+        className="grid h-4 w-4 place-items-center rounded-full text-ink-400 transition hover:text-ink-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
+      >
+        <Info className="h-3.5 w-3.5" />
+      </button>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 w-60 -translate-x-1/2 rounded-lg bg-ink-950 px-3 py-2 text-xs font-normal leading-snug text-white opacity-0 shadow-lg transition group-hover:opacity-100 group-focus-within:opacity-100"
+      >
+        {text}
+      </span>
+    </span>
+  );
+}
+
 export function TextField({
   label,
   id,
+  hint,
   className,
   ...props
-}: React.InputHTMLAttributes<HTMLInputElement> & { label: string; id: string }) {
+}: React.InputHTMLAttributes<HTMLInputElement> & {
+  label: string;
+  id: string;
+  /** Shown as an info tooltip next to the label. */
+  hint?: string;
+}) {
   return (
     <div className="flex flex-col gap-1.5">
       <label htmlFor={id} className="text-sm font-medium text-ink-700">
         {label}
+        {props.required && <RequiredMark />}
+        {hint && <InfoTip text={hint} />}
       </label>
       <input
         id={id}
@@ -60,6 +102,7 @@ export function PasswordField({
     <div className="flex flex-col gap-1.5">
       <label htmlFor={id} className="text-sm font-medium text-ink-700">
         {label}
+        {props.required && <RequiredMark />}
       </label>
       <div className="relative">
         <input

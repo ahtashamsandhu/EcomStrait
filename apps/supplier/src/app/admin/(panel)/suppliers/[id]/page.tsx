@@ -19,11 +19,16 @@ const LEVELS: { key: keyof SupplierVerification; label: string }[] = [
   { key: "badge_granted_at", label: "Verified badge" },
 ];
 
+function formatDate(iso: string | null | undefined): string {
+  if (!iso) return "";
+  return new Date(iso).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+}
+
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col border-b border-ink-50 py-2.5 last:border-0 sm:flex-row sm:justify-between">
       <dt className="text-sm text-ink-500">{label}</dt>
-      <dd className="text-sm font-medium text-ink-900">{value || "—"}</dd>
+      <dd className="whitespace-pre-line text-sm font-medium text-ink-900 sm:max-w-[60%] sm:text-right">{value || "—"}</dd>
     </div>
   );
 }
@@ -66,6 +71,13 @@ export default async function AdminSupplierDetail({
     }),
   );
   const label = (t: string) => DOCUMENTS.find((x) => x.type === t)?.label ?? t;
+  const uploadedTypes = new Set(docs.map((d) => d.type));
+  const missingDocs = DOCUMENTS.filter((d) => !uploadedTypes.has(d.type));
+
+  // The login email lives in auth, not on the suppliers row — an admin
+  // reviewing an application needs it to reach the applicant.
+  const { data: owner } = await client.auth.admin.getUserById(supplier.owner_user_id);
+  const ownerEmail = owner?.user?.email ?? "";
 
   return (
     <div>
@@ -83,19 +95,41 @@ export default async function AdminSupplierDetail({
 
       <div className="mt-6 grid gap-6 lg:grid-cols-3">
         <div className="flex flex-col gap-6 lg:col-span-2">
-          {/* Business */}
+          {/* Everything the supplier entered, grouped the way the onboarding
+              wizard asks for it (steps 1, 2 and 4) so an admin can check the
+              application against the same structure the supplier saw. */}
           <section className="rounded-2xl border border-ink-100 bg-white p-5">
-            <h2 className="text-sm font-semibold text-ink-950">Business</h2>
+            <h2 className="text-sm font-semibold text-ink-950">Business information</h2>
             <dl className="mt-2">
+              <Row label="Business name" value={supplier.business_name ?? ""} />
               <Row label="Business type" value={supplier.business_type ?? ""} />
-              <Row label="Contact" value={supplier.contact_person ?? ""} />
+              <Row label="Person name" value={supplier.contact_person ?? ""} />
+              <Row label="Account email" value={ownerEmail} />
               <Row label="Phone" value={supplier.phone ?? ""} />
-              <Row label="Location" value={[supplier.city, supplier.country].filter(Boolean).join(", ")} />
+              <Row label="Country" value={supplier.country ?? ""} />
+              <Row label="City" value={supplier.city ?? ""} />
               <Row label="Website" value={supplier.website ?? ""} />
+            </dl>
+          </section>
+
+          <section className="rounded-2xl border border-ink-100 bg-white p-5">
+            <h2 className="text-sm font-semibold text-ink-950">Business details</h2>
+            <dl className="mt-2">
               <Row label="Years in business" value={supplier.years_in_business ?? ""} />
-              <Row label="Type" value={supplier.manufacturing_type ?? ""} />
-              <Row label="Categories" value={(supplier.product_categories ?? []).join(", ")} />
-              <Row label="Description" value={supplier.description ?? ""} />
+              <Row label="Number of products" value={supplier.number_of_products ?? ""} />
+              <Row label="Manufacturer or reseller" value={supplier.manufacturing_type ?? ""} />
+              <Row label="Product categories" value={(supplier.product_categories ?? []).join(", ")} />
+              <Row label="Business description" value={supplier.description ?? ""} />
+            </dl>
+          </section>
+
+          <section className="rounded-2xl border border-ink-100 bg-white p-5">
+            <h2 className="text-sm font-semibold text-ink-950">Product information</h2>
+            <dl className="mt-2">
+              <Row label="Estimated inventory size" value={supplier.estimated_inventory_size ?? ""} />
+              <Row label="Average lead time" value={supplier.average_lead_time ?? ""} />
+              <Row label="Minimum order quantity" value={supplier.min_order_quantity ?? ""} />
+              <Row label="Shipping regions" value={(supplier.shipping_regions ?? []).join(", ")} />
             </dl>
           </section>
 
@@ -108,20 +142,42 @@ export default async function AdminSupplierDetail({
               <ul className="mt-3 flex flex-col gap-2">
                 {docs.map((d) => (
                   <li key={d.id} className="flex items-center justify-between gap-3 rounded-xl border border-ink-100 px-4 py-2.5">
-                    <span className="flex items-center gap-2 text-sm text-ink-800">
-                      <FileText className="h-4 w-4 text-ink-400" /> {label(d.type)}
+                    <span className="flex min-w-0 items-center gap-2 text-sm text-ink-800">
+                      <FileText className="h-4 w-4 shrink-0 text-ink-400" />
+                      <span className="min-w-0">
+                        <span className="block truncate">{label(d.type)}</span>
+                        <span className="block text-xs text-ink-400">Uploaded {formatDate(d.created_at)}</span>
+                      </span>
                     </span>
                     {d.url ? (
-                      <a href={d.url} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-ai-600 hover:underline">
+                      <a href={d.url} target="_blank" rel="noopener noreferrer" className="shrink-0 text-sm font-semibold text-ai-600 hover:underline">
                         View
                       </a>
                     ) : (
-                      <span className="text-xs text-ink-400">unavailable</span>
+                      <span className="shrink-0 text-xs text-ink-400">unavailable</span>
                     )}
                   </li>
                 ))}
               </ul>
             )}
+            {missingDocs.length > 0 && (
+              <p className="mt-3 text-xs text-ink-400">
+                Not uploaded: {missingDocs.map((d) => d.label).join(", ")}.
+              </p>
+            )}
+          </section>
+
+          <section className="rounded-2xl border border-ink-100 bg-white p-5">
+            <h2 className="text-sm font-semibold text-ink-950">Application</h2>
+            <dl className="mt-2">
+              <Row label="Status" value={supplier.status.replace("_", " ")} />
+              <Row label="Onboarding step" value={`${supplier.onboarding_step} of 5`} />
+              <Row label="Terms accepted" value={supplier.terms_accepted_at ? formatDate(supplier.terms_accepted_at) : "Not yet"} />
+              <Row label="Marketing emails" value={supplier.marketing_opt_in ? "Opted in" : "Opted out"} />
+              <Row label="Quality score" value={supplier.quality_score != null ? String(supplier.quality_score) : ""} />
+              <Row label="Account created" value={formatDate(supplier.created_at)} />
+              <Row label="Last updated" value={formatDate(supplier.updated_at)} />
+            </dl>
           </section>
         </div>
 

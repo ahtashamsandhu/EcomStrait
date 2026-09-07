@@ -8,12 +8,12 @@ import { getMerchantStores, getListingsFor } from "@/lib/listings";
 import { ProductCard } from "@/components/catalog/product-card";
 import { FilterSelect } from "@/components/catalog/filter-select";
 
-export const metadata: Metadata = { title: "Find Suppliers" };
+export const metadata: Metadata = { title: "Find Products" };
 
 /** 24 fills the 4-up grid evenly (and the 2-up grid on tablets). */
 const GRID_PAGE_SIZE = 24;
 
-export default async function FindSuppliersPage({
+export default async function FindProductsPage({
   searchParams,
 }: {
   searchParams: Promise<RawParams>;
@@ -49,9 +49,9 @@ export default async function FindSuppliersPage({
     <div className="mx-auto max-w-6xl">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-ink-950">Find Suppliers</h1>
+          <h1 className="text-2xl font-bold text-ink-950">Find Products</h1>
           <p className="mt-1 text-sm text-ink-500">
-            Browse verified suppliers&apos; products and add them to your inventory.
+            Browse products from verified suppliers and add them to your inventory.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

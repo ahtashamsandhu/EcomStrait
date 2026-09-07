@@ -26,7 +26,7 @@ import { signOut } from "@/lib/actions";
 
 const NAV = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
-  { href: "/find-suppliers", label: "Find Suppliers", icon: Search },
+  { href: "/find-suppliers", label: "Find Products", icon: Search },
   // Gallery hidden while we offer a single premium theme — restore this row
   // when there's more than one to browse. See app/(app)/gallery/page.tsx.
   // { href: "/gallery", label: "Store Gallery", icon: LayoutGrid },

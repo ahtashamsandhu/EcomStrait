@@ -611,7 +611,7 @@ const MERCHANT_SYSTEM = [
   "              that isn't a store-plan field or a page. Say so plainly and",
   "              point them at the real dashboard section that handles it —",
   '              never invent a section name. The only sections that exist',
-  '              are: "Find Suppliers" (browse products and add them to a',
+  '              are: "Find Products" (browse products and add them to a',
   '              store), "Selected Inventory" (products already chosen,',
   '              before a store is built), "Stores", "Orders", "Sales",',
   '              "Wallet", "Billing", "Settings", and, for a launched store,',

@@ -2,7 +2,7 @@
 
 import { Check } from "lucide-react";
 import { cn } from "@ecomstrait/ui";
-import { TextField } from "@/components/ui";
+import { RequiredMark, TextField } from "@/components/ui";
 import type { FieldDef, SupplierForm } from "@/lib/onboarding";
 import { STEPS } from "@/lib/onboarding";
 
@@ -39,18 +39,21 @@ function Select({
   label,
   value,
   options,
+  required,
   onChange,
 }: {
   id: string;
   label: string;
   value: string;
   options: string[];
+  required?: boolean;
   onChange: (v: string) => void;
 }) {
   return (
     <div className="flex flex-col gap-1.5">
       <label htmlFor={id} className="text-sm font-medium text-ink-700">
         {label}
+        {required && <RequiredMark />}
       </label>
       <select
         id={id}
@@ -73,11 +76,13 @@ function MultiSelect({
   label,
   values,
   options,
+  required,
   onChange,
 }: {
   label: string;
   values: string[];
   options: string[];
+  required?: boolean;
   onChange: (v: string[]) => void;
 }) {
   function toggle(o: string) {
@@ -85,7 +90,10 @@ function MultiSelect({
   }
   return (
     <div className="flex flex-col gap-2">
-      <span className="text-sm font-medium text-ink-700">{label}</span>
+      <span className="text-sm font-medium text-ink-700">
+        {label}
+        {required && <RequiredMark />}
+      </span>
       <div className="flex flex-wrap gap-2">
         {options.map((o) => {
           const on = values.includes(o);
@@ -126,6 +134,7 @@ export function FieldInput({
       <div className={wrap}>
         <MultiSelect
           label={def.label}
+          required={def.required}
           values={form[def.name] as string[]}
           options={def.options ?? []}
           onChange={(v) => set(def.name, v as SupplierForm[typeof def.name])}
@@ -139,6 +148,7 @@ export function FieldInput({
         <Select
           id={def.name}
           label={def.label}
+          required={def.required}
           value={form[def.name] as string}
           options={def.options ?? []}
           onChange={(v) => set(def.name, v as SupplierForm[typeof def.name])}
@@ -151,6 +161,7 @@ export function FieldInput({
       <div className={cn("flex flex-col gap-1.5", wrap)}>
         <label htmlFor={def.name} className="text-sm font-medium text-ink-700">
           {def.label}
+          {def.required && <RequiredMark />}
         </label>
         <textarea
           id={def.name}
@@ -168,6 +179,7 @@ export function FieldInput({
       <TextField
         id={def.name}
         label={def.label}
+        required={def.required}
         placeholder={def.placeholder}
         value={form[def.name] as string}
         onChange={(e) => set(def.name, e.target.value as SupplierForm[typeof def.name])}

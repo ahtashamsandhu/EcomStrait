@@ -37,6 +37,6 @@ export async function updateProfile(input: {
     await supabase.auth.updateUser({ data: { full_name: fullName } });
   }
 
-  revalidatePath("/settings");
+  revalidatePath("/settings", "layout");
   return {};
 }

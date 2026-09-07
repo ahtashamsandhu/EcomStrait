@@ -129,7 +129,7 @@ export default async function InventoryPage({
             Not yet on a store ({preLaunch.length})
           </h2>
           <p className="mt-0.5 text-xs text-ink-500">
-            Queued from Find Suppliers, waiting for a store to be built or added to one you already
+            Queued from Find Products, waiting for a store to be built or added to one you already
             have.
           </p>
           <div className="mt-3 grid items-stretch gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -147,14 +147,14 @@ export default async function InventoryPage({
               <PackageOpen className="h-7 w-7" />
             </span>
             <p className="mt-4 max-w-sm text-sm text-ink-500">
-              Nothing listed yet. Browse suppliers and add products to one of your stores.
+              Nothing listed yet. Browse products and add them to one of your stores.
             </p>
             <div className="mt-5 flex flex-wrap justify-center gap-2">
               <Link
                 href="/find-suppliers"
                 className="inline-flex items-center gap-2 rounded-xl bg-brand-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-600"
               >
-                <Search className="h-4 w-4" /> Find Suppliers
+                <Search className="h-4 w-4" /> Find Products
               </Link>
               <Link
                 href="/builder"

@@ -15,7 +15,7 @@ export default async function OnboardingLayout({
             EcomStrait <span className="text-brand-600">Suppliers</span>
           </Link>
           <Link href="/dashboard" className="text-sm font-medium text-ink-500 hover:text-ink-800">
-            Save &amp; exit
+            Back to dashboard
           </Link>
         </div>
       </header>

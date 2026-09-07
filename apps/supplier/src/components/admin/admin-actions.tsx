@@ -6,21 +6,28 @@ import { Check, Loader2, X, Undo2 } from "lucide-react";
 import type { SupplierStatus } from "@ecomstrait/db/types";
 import { approveSupplier, rejectSupplier, returnToPending } from "@/lib/admin-actions";
 import { RETURN_CHECKLIST } from "@/lib/onboarding";
+import { useToast } from "@/components/app/toast";
 
 export function AdminActions({ id, status }: { id: string; status: SupplierStatus }) {
   const router = useRouter();
+  const { showToast } = useToast();
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [returning, setReturning] = useState(false);
   const [reasons, setReasons] = useState<string[]>([]);
   const [note, setNote] = useState("");
 
-  function run(fn: () => Promise<{ error?: string }>) {
+  function run(fn: () => Promise<{ error?: string }>, done: string) {
     setError(null);
     start(async () => {
       const res = await fn();
-      if (res?.error) setError(res.error);
-      else router.refresh();
+      if (res?.error) {
+        setError(res.error);
+        showToast(res.error, "error");
+        return;
+      }
+      showToast(done);
+      router.refresh();
     });
   }
 
@@ -39,6 +46,7 @@ export function AdminActions({ id, status }: { id: string; status: SupplierStatu
       setReturning(false);
       setReasons([]);
       setNote("");
+      showToast("Application sent back to the supplier for edits.");
       router.refresh();
     });
   }
@@ -100,20 +108,25 @@ export function AdminActions({ id, status }: { id: string; status: SupplierStatu
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap gap-2">
         <button
-          onClick={() => run(() => approveSupplier(id))}
+          onClick={() => run(() => approveSupplier(id), "Supplier approved — verified badge granted.")}
           disabled={pending || status === "approved"}
           className="inline-flex items-center gap-2 rounded-xl bg-brand-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-brand-600 disabled:opacity-50"
         >
           {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-          Approve
+          {status === "approved" ? "Approved" : "Approve"}
         </button>
-        <button
-          onClick={() => run(() => rejectSupplier(id))}
-          disabled={pending || status === "rejected"}
-          className="inline-flex items-center gap-2 rounded-xl border border-red-200 bg-white px-4 py-2.5 text-sm font-semibold text-red-600 transition hover:bg-red-50 disabled:opacity-50"
-        >
-          <X className="h-4 w-4" /> Reject
-        </button>
+        {/* An approved supplier is a settled decision — rejecting from here
+            would silently pull a live catalog; "Return for edits" remains the
+            way to reopen it. */}
+        {status !== "approved" && (
+          <button
+            onClick={() => run(() => rejectSupplier(id), "Supplier application rejected.")}
+            disabled={pending || status === "rejected"}
+            className="inline-flex items-center gap-2 rounded-xl border border-red-200 bg-white px-4 py-2.5 text-sm font-semibold text-red-600 transition hover:bg-red-50 disabled:opacity-50"
+          >
+            <X className="h-4 w-4" /> {status === "rejected" ? "Rejected" : "Reject"}
+          </button>
+        )}
         <button
           onClick={() => {
             setError(null);

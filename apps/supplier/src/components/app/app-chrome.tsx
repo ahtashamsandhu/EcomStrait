@@ -222,11 +222,18 @@ export function AppChrome({
                 {menu && (
                   <div className="absolute right-0 top-12 z-30 w-52 rounded-xl border border-ink-100 bg-white p-1.5 shadow-lg">
                     <Link
-                      href="/settings"
+                      href="/settings/account"
                       onClick={() => setMenu(false)}
                       className="block rounded-lg px-3 py-2 text-sm text-ink-700 hover:bg-ink-50"
                     >
                       Account settings
+                    </Link>
+                    <Link
+                      href="/settings/business-profile"
+                      onClick={() => setMenu(false)}
+                      className="block rounded-lg px-3 py-2 text-sm text-ink-700 hover:bg-ink-50"
+                    >
+                      Business profile
                     </Link>
                     <Link
                       href="/help"

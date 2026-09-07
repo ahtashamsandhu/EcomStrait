@@ -62,7 +62,7 @@ const MOQ = ["No minimum", "1–10", "10–50", "50–100", "100+"];
 export const STEP1_FIELDS: FieldDef[] = [
   { name: "business_name", label: "Business name", type: "text", required: true, full: true },
   { name: "business_type", label: "Business type", type: "select", required: true, options: BUSINESS_TYPES },
-  { name: "contact_person", label: "Contact person", type: "text", required: true },
+  { name: "contact_person", label: "Person name", type: "text", required: true },
   { name: "phone", label: "Phone number", type: "text", required: true, placeholder: "+1 555 000 0000" },
   { name: "country", label: "Country", type: "text", required: true },
   { name: "city", label: "City", type: "text", required: true },
@@ -108,7 +108,7 @@ export const STEPS = [
  * own step/field-group names above so both sides recognize them.
  */
 export const RETURN_CHECKLIST = [
-  { key: "business_info", label: "Business information (name, type, contact, phone, location, website)" },
+  { key: "business_info", label: "Business information (name, type, person name, phone, location, website)" },
   { key: "business_details", label: "Business details (experience, categories, description)" },
   { key: "doc_business_registration", label: "Business registration document" },
   { key: "doc_tax_registration", label: "Tax registration document" },

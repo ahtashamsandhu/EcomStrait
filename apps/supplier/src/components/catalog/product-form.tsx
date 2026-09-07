@@ -7,6 +7,7 @@ import { cn } from "@ecomstrait/ui";
 import type { ProductStatus } from "@ecomstrait/db/types";
 import { Button, TextField } from "@/components/ui";
 import { createProduct, updateProduct, enrichProductAction } from "@/lib/product-actions";
+import { validatePricing, MAX_PRICE, MAX_STOCK } from "@/lib/product-rules";
 import { UpgradeModal } from "@/components/billing/upgrade-modal";
 
 export type ProductFormValues = {
@@ -137,6 +138,13 @@ export function ProductForm({
       setError("A title is required.");
       return;
     }
+    // Same rules the server applies (validatePricing) — checked here first so
+    // the message shows next to the form instead of after a round trip.
+    const invalid = validatePricing(form, { requirePrices: true });
+    if (invalid) {
+      setError(invalid);
+      return;
+    }
     // Checked client-side first (canAddProduct is passed in from the server)
     // so hitting the catalog limit shows the Upgrade popup right away —
     // createProduct() below still enforces the same limit server-side.
@@ -265,15 +273,57 @@ export function ProductForm({
 
         <Card title="Pricing & stock">
           <div className="grid gap-4">
-            <TextField id="wholesale_price" label="Wholesale price" type="number" value={form.wholesale_price} onChange={(e) => set("wholesale_price", e.target.value)} />
-            <TextField id="retail_price" label="MSRP (suggested retail price)" type="number" value={form.retail_price} onChange={(e) => set("retail_price", e.target.value)} />
-            <div>
-              <TextField id="map_price" label="MAP (minimum advertised price)" type="number" value={form.map_price} onChange={(e) => set("map_price", e.target.value)} />
-              <p className="mt-1 text-xs text-ink-400">
-                The lowest price merchants can list this at — leave blank for no floor.
-              </p>
-            </div>
-            <TextField id="stock" label="Stock" type="number" value={form.stock} onChange={(e) => set("stock", e.target.value)} />
+            <TextField
+              id="wholesale_price"
+              label="Wholesale price"
+              hint="What merchants pay you per unit. This is your cost to them, so it must not exceed the MAP or the MSRP."
+              type="number"
+              required
+              min={0}
+              max={MAX_PRICE}
+              step="0.01"
+              inputMode="decimal"
+              value={form.wholesale_price}
+              onChange={(e) => set("wholesale_price", e.target.value)}
+            />
+            <TextField
+              id="retail_price"
+              label="MSRP (suggested retail price)"
+              hint="The retail price you recommend merchants sell at. Must be at least the wholesale price and the MAP."
+              type="number"
+              required
+              min={0}
+              max={MAX_PRICE}
+              step="0.01"
+              inputMode="decimal"
+              value={form.retail_price}
+              onChange={(e) => set("retail_price", e.target.value)}
+            />
+            <TextField
+              id="map_price"
+              label="MAP (minimum advertised price)"
+              hint="The lowest price merchants may list this at. Leave blank for no floor. Must sit between the wholesale price and the MSRP."
+              type="number"
+              min={0}
+              max={MAX_PRICE}
+              step="0.01"
+              inputMode="decimal"
+              value={form.map_price}
+              onChange={(e) => set("map_price", e.target.value)}
+            />
+            <TextField
+              id="stock"
+              label="Stock"
+              hint="Units available right now. Whole numbers only — it can't go below zero."
+              type="number"
+              required
+              min={0}
+              max={MAX_STOCK}
+              step="1"
+              inputMode="numeric"
+              value={form.stock}
+              onChange={(e) => set("stock", e.target.value)}
+            />
           </div>
         </Card>
 

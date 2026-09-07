@@ -47,7 +47,15 @@ const SNAPSHOT_TTL_MS = 15 * 60 * 1000;
 export async function askCoFounderAction(
   history: CoFounderTurn[],
   message: string,
-): Promise<{ reply: string } | { error: string; upgrade?: boolean }> {
+): Promise<
+  | {
+      reply: string;
+      /** Today's remaining AI budget after this message was charged — the
+       *  chat updates its counter from this instead of waiting for a reload. */
+      tokensRemaining: number;
+    }
+  | { error: string; upgrade?: boolean }
+> {
   const supabase = await createClient();
   const {
     data: { user },
@@ -93,14 +101,17 @@ export async function askCoFounderAction(
     message: text,
   });
   await recordTokenUsage(result.tokensUsed);
-  await appendChatTurns({
-    tenantId: user.id,
-    agent: "merchant_cofounder",
-    threadKey: user.id,
-    turns: [
-      { role: "user", content: text },
-      { role: "assistant", content: result.reply },
-    ],
-  });
-  return { reply: result.reply };
+  const [after] = await Promise.all([
+    getEntitlements(),
+    appendChatTurns({
+      tenantId: user.id,
+      agent: "merchant_cofounder",
+      threadKey: user.id,
+      turns: [
+        { role: "user", content: text },
+        { role: "assistant", content: result.reply },
+      ],
+    }),
+  ]);
+  return { reply: result.reply, tokensRemaining: after.tokensRemaining };
 }
