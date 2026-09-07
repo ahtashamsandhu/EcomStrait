@@ -6,6 +6,7 @@ import { CtaBanner } from "@/components/shared/cta-banner";
 import { SuppliersHero } from "@/components/pages/suppliers-hero";
 import { SupplierDashboard } from "@/components/pages/supplier-dashboard";
 import { SupplierOnboarding } from "@/components/pages/supplier-onboarding";
+import { PricingPlans } from "@/components/pages/pricing-plans";
 import { supplierBenefits } from "@/content/process";
 
 export const metadata: Metadata = {
@@ -49,6 +50,8 @@ export default function SuppliersPage() {
         <SectionHeading eyebrow="Onboarding" title="Get verified in four steps" />
         <SupplierOnboarding />
       </Section>
+
+      <PricingPlans audience="suppliers" />
 
       {/* Registration */}
       <Section tone="dark" id="register">

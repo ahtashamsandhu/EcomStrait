@@ -39,6 +39,6 @@ export const homeFaqs: FaqItem[] = [
   {
     question: "How much does it cost?",
     answer:
-      "Suppliers subscribe for premium tools and visibility. Store owners pay a one-time setup for their build plus a monthly platform subscription. Detailed pricing is coming soon — book a demo for a tailored quote.",
+      "Both suppliers and store owners start free and upgrade as they grow: Basic $9, Premium $39, or Full $99 per month, each with more daily AI usage and higher limits. See the plans on the Suppliers and Store Owners pages, or book a demo for a tailored quote.",
   },
 ];

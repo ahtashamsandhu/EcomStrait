@@ -2,10 +2,11 @@
 
 import { motion, useReducedMotion } from "framer-motion";
 import { Check, Sparkles } from "lucide-react";
-import { PLAN_ENTITLEMENTS, PLAN_ORDER } from "@ecomstrait/db/plans";
+import { PLAN_ENTITLEMENTS, PLAN_ORDER, SUPPLIER_PLAN_ENTITLEMENTS } from "@ecomstrait/db/plans";
+import type { PlanTier } from "@ecomstrait/db/types";
 import { Section, SectionHeading } from "@/components/ui/section";
 import { Button } from "@/components/ui/button";
-import { merchantSignupUrl } from "@/lib/site";
+import { merchantSignupUrl, supplierSignupUrl } from "@/lib/site";
 import { cn } from "@/lib/utils";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
@@ -21,24 +22,84 @@ function fmt(n: number): string {
   return String(n);
 }
 
-export function PricingPlans() {
+type Audience = "merchants" | "suppliers";
+
+/** What one pricing card shows — both audiences read from the shared plan
+ *  tables in packages/db, so the numbers here always match the apps. */
+type CardPlan = {
+  tier: PlanTier;
+  label: string;
+  priceMonthly: number;
+  tokensPerDay: number;
+  /** The tier's capacity line: stores for merchants, catalog size for suppliers. */
+  capacity: string;
+};
+
+const COPY: Record<
+  Audience,
+  { title: string; description: string; signupUrl: string; paidCta: string }
+> = {
+  merchants: {
+    title: "Simple plans that grow with you",
+    description:
+      "Start free, upgrade as your store grows. Every plan includes the full AI toolkit — more stores and AI usage as you go up.",
+    signupUrl: merchantSignupUrl,
+    paidCta: "Build My Business",
+  },
+  suppliers: {
+    title: "Supplier plans that scale with your catalog",
+    description:
+      "Start free, upgrade as you list more. Every plan includes the full AI toolkit — a bigger catalog and more AI usage as you go up.",
+    signupUrl: supplierSignupUrl,
+    paidCta: "Become a Supplier",
+  },
+};
+
+function plansFor(audience: Audience): CardPlan[] {
+  if (audience === "suppliers") {
+    return PLAN_ORDER.map((tier) => {
+      const p = SUPPLIER_PLAN_ENTITLEMENTS[tier];
+      return {
+        tier,
+        label: p.label,
+        priceMonthly: p.priceMonthly,
+        tokensPerDay: p.tokensPerDay,
+        capacity: p.productLimit === null ? "Unlimited products" : `${fmt(p.productLimit)} products`,
+      };
+    });
+  }
+  return PLAN_ORDER.map((tier) => {
+    const p = PLAN_ENTITLEMENTS[tier];
+    return {
+      tier,
+      label: p.label,
+      priceMonthly: p.priceMonthly,
+      tokensPerDay: p.tokensPerDay,
+      capacity: `${p.storeLimit} store${p.storeLimit === 1 ? "" : "s"}`,
+    };
+  });
+}
+
+export function PricingPlans({ audience = "merchants" }: { audience?: Audience }) {
   const reduce = useReducedMotion();
+  const copy = COPY[audience];
 
   return (
     <Section tone="muted" id="pricing">
-      <SectionHeading
-        eyebrow="Pricing"
-        title="Simple plans that grow with you"
-        description="Start free, upgrade as your store grows. Every plan includes the full AI toolkit — more stores and AI usage as you go up."
-      />
+      <SectionHeading eyebrow="Pricing" title={copy.title} description={copy.description} />
 
       <div className="mt-12 grid gap-6 lg:grid-cols-4">
-        {PLAN_ORDER.map((tier, i) => {
-          const plan = PLAN_ENTITLEMENTS[tier];
-          return (
-            <PlanCard key={tier} plan={plan} featured={tier === FEATURED_TIER} index={i} reduce={!!reduce} />
-          );
-        })}
+        {plansFor(audience).map((plan, i) => (
+          <PlanCard
+            key={plan.tier}
+            plan={plan}
+            signupUrl={copy.signupUrl}
+            paidCta={copy.paidCta}
+            featured={plan.tier === FEATURED_TIER}
+            index={i}
+            reduce={!!reduce}
+          />
+        ))}
       </div>
     </Section>
   );
@@ -46,11 +107,15 @@ export function PricingPlans() {
 
 function PlanCard({
   plan,
+  signupUrl,
+  paidCta,
   featured,
   index,
   reduce,
 }: {
-  plan: (typeof PLAN_ENTITLEMENTS)[keyof typeof PLAN_ENTITLEMENTS];
+  plan: CardPlan;
+  signupUrl: string;
+  paidCta: string;
   featured: boolean;
   index: number;
   reduce: boolean;
@@ -108,7 +173,7 @@ function PlanCard({
         </li>
         <li className="flex items-center gap-2.5 text-sm text-ink-600">
           <Check className="h-4 w-4 shrink-0 text-brand-500" strokeWidth={3} />
-          {plan.storeLimit} store{plan.storeLimit === 1 ? "" : "s"}
+          {plan.capacity}
         </li>
         <li className="flex items-center gap-2.5 text-sm text-ink-600">
           <Check className="h-4 w-4 shrink-0 text-brand-500" strokeWidth={3} />
@@ -117,8 +182,8 @@ function PlanCard({
       </ul>
 
       <div className="mt-8">
-        <Button href={merchantSignupUrl} variant={featured ? "primary" : "outline"} size="md" className="w-full">
-          {plan.priceMonthly === 0 ? "Start free" : "Build My Business"}
+        <Button href={signupUrl} variant={featured ? "primary" : "outline"} size="md" className="w-full">
+          {plan.priceMonthly === 0 ? "Start free" : paidCta}
         </Button>
       </div>
     </motion.div>
