@@ -29,6 +29,20 @@ const r2Host = (() => {
   }
 })();
 
+// The production media CDN, allow-listed unconditionally. Deriving the R2
+// host from `R2_PUBLIC_URL` alone is fragile: that variable is read at BUILD
+// time, so a deploy where it was unset, scoped to a different environment,
+// or added after the build silently ships with no R2 pattern at all — and
+// every blog cover image then 400s at `/_next/image` with
+// INVALID_IMAGE_OPTIMIZE_REQUEST (confirmed live on 2026-09-07: the same
+// optimizer served a Supabase-hosted logo and rejected a valid PNG on
+// cdn.ecomstrait.com). `*.r2.dev` covers a bucket's default public domain
+// before a custom domain is attached. URLs in `store_media`/`store_posts`
+// are stored absolute, so the host in the DB must always be allow-listed
+// here regardless of what today's env var says.
+const KNOWN_MEDIA_HOSTS = ["cdn.ecomstrait.com", "*.r2.dev"];
+const mediaHosts = Array.from(new Set([...(r2Host ? [r2Host] : []), ...KNOWN_MEDIA_HOSTS]));
+
 
 /**
  * Baseline browser hardening. `frame-ancestors 'self'` covers the builder's
@@ -55,7 +69,7 @@ const nextConfig: NextConfig = {
       ...(supabaseHost
         ? [{ protocol: "https" as const, hostname: supabaseHost, pathname: "/storage/v1/object/public/**" }]
         : []),
-      ...(r2Host ? [{ protocol: "https" as const, hostname: r2Host, pathname: "/**" }] : []),
+      ...mediaHosts.map((hostname) => ({ protocol: "https" as const, hostname, pathname: "/**" })),
     ],
   },
 };

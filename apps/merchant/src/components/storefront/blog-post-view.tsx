@@ -1,6 +1,6 @@
 "use client";
 
-import Image from "next/image";
+import { CoverImage } from "@/components/storefront/cover-image";
 import type { Storefront } from "@/lib/storefront";
 import type { PostDetail } from "@/lib/blog-api";
 import type { StorefrontNavLink } from "@/lib/storefront-api";
@@ -101,7 +101,7 @@ export function BlogPostView({
 
           {post.coverImage && (
             <div className="relative mt-8 aspect-[16/9] overflow-hidden" style={{ background: surface, borderRadius: "var(--radius)" }}>
-              <Image src={post.coverImage} alt="" fill sizes="(min-width: 640px) 672px, 100vw" className="object-cover" priority />
+              <CoverImage src={post.coverImage} alt="" fill sizes="(min-width: 640px) 672px, 100vw" className="object-cover" priority />
             </div>
           )}
 

@@ -1,6 +1,9 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "98a510664b832c62228ed7638c659e28"
+# The app's client id is NOT committed. Copy it from the Partner dashboard
+# (App setup -> Client ID) into this line and into SHOPIFY_API_KEY in .env, or
+# run `shopify app config link` which fills it in from the dashboard for you.
+client_id = "<your-client-id>"
 name = "EcomStrait"
 application_url = "https://shopify-ten-jet.vercel.app"
 embedded = true
@@ -25,7 +28,7 @@ api_version = "2026-10"
   topics = [ "app/uninstalled" ]
 
   # Orders sync → EcomStrait platform. Requires Protected Customer Data access.
-  # Disabled 2026-08-29: new Public app (client_id 98a5106...) isn't approved
+  # Disabled 2026-08-29: new Public app isn't approved
   # for Protected Customer Data yet, so read_orders + this webhook block
   # `shopify app deploy` with "Version couldn't be created." Re-enable both
   # once Shopify approves the request in Partners > App setup > Customer data.

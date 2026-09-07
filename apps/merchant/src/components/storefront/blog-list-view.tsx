@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import Image from "next/image";
+import { CoverImage } from "@/components/storefront/cover-image";
 import type { Storefront } from "@/lib/storefront";
 import type { PostSummary } from "@/lib/blog-api";
 import type { StorefrontNavLink } from "@/lib/storefront-api";
@@ -55,7 +55,7 @@ export function BlogListView({
                 >
                   {p.coverImage && (
                     <div className="relative aspect-[4/3] overflow-hidden" style={{ background: surface, borderRadius: "var(--radius)" }}>
-                      <Image
+                      <CoverImage
                         src={p.coverImage}
                         alt=""
                         fill
