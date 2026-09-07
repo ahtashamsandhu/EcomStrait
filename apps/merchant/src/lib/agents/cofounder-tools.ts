@@ -2,13 +2,35 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { createClient } from "@ecomstrait/auth/server";
 import type { StoreType } from "@ecomstrait/db";
-import { autoSelectProducts, getProductsByIds } from "@/lib/catalog";
+import { autoSelectProducts, getProductsByIds, type CatalogProduct } from "@/lib/catalog";
 import { suggestProductsForStore } from "@/lib/product-suggestions";
 import { generateStorePlan, themeForStyle, type PlanAnswers, type StorePlan } from "@/lib/ecomai";
 import { ensureDraftStore, launchStoreCore, editStore } from "@/lib/builder-actions";
 import { generatePostDraft } from "@/lib/blog-actions";
 import { assertTokenBudget, recordTokenUsage } from "@/lib/entitlements";
 import { askBusinessAdvisor } from "./business-advisor";
+
+/**
+ * Did the products this store is being built around actually match the
+ * niche? `autoSelectProducts` silently falls back to the newest published
+ * products when nothing matches the niche term (catalog.ts), and a
+ * `productIds` list from a prior `suggest_products` call may itself have
+ * been a platform-wide fallback — so the tool result says which it was,
+ * rather than presenting a random assortment as "a store around X"
+ * (2026-09-07 capability audit, §9.5). Same shape as builder-actions.ts's
+ * `selectionMatchesNiche`, extended to titles as well as categories.
+ */
+function productsMatchNiche(products: CatalogProduct[], niche: string): boolean {
+  const nicheWords = niche
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length > 2);
+  if (!nicheWords.length) return true;
+  return products.some((p) => {
+    const haystack = `${p.category ?? ""} ${p.title}`.toLowerCase();
+    return nicheWords.some((w) => haystack.includes(w));
+  });
+}
 
 /**
  * The tools that make Co-Founder an orchestrator rather than a chat that
@@ -79,6 +101,10 @@ export function createCofounderTools(opts: { tenantId: string }) {
         // relay these, never present them as if they were the category
         // asked for.
         matchedCategory: suggested.matchedCategory,
+        // "category" = the catalog's own category string matched; "title" =
+        // only product titles matched the phrase (still a real match, say
+        // "matched by product title" if it matters); null = fallback.
+        matchedBy: suggested.matchedBy,
         requestedCategory: suggested.requestedCategory,
         products: suggested.products.map((p) => ({
           id: p.id,
@@ -94,7 +120,7 @@ export function createCofounderTools(opts: { tenantId: string }) {
     {
       name: "suggest_products",
       description:
-        "Suggest real, ranked products from the platform catalog for the merchant to sell — ranked by actual units sold and margin, never a guess. Use when asked what to sell, for product ideas, or before building a store around a niche. Pass storeId to exclude products already listed there. The result's matchedCategory tells you whether the requested category actually had matches — if false, these are platform-wide fallback picks, not the category asked for, and you must say so plainly rather than presenting them as a match.",
+        "Suggest real, ranked products from the platform catalog for the merchant to sell — ranked by actual units sold and margin, never a guess. Use when asked what to sell, for product ideas, or before building a store around a niche. Pass storeId to exclude products already listed there. The result's matchedCategory tells you whether the requested category actually had matches — if false, these are platform-wide fallback picks, not the category asked for, and you must say so plainly rather than presenting them as a match. matchedBy says whether the match was on the catalog category or only on product titles. Products are in stock and ranked by units sold in the last 90 days plus margin.",
       schema: z.object({
         category: z.string().optional().describe("A niche/category hint, e.g. 'shoes' — omit for platform-wide top sellers"),
         storeId: z.string().optional().describe("Exclude products already listed on this store"),
@@ -136,7 +162,11 @@ export function createCofounderTools(opts: { tenantId: string }) {
         products.map((p) => p.title),
       );
       await recordTokenUsage(tokensUsed);
+      // Same as finalizeBuilderConversation (builder-actions.ts): the plan
+      // generator may pick its own name; a name the merchant gave wins.
+      if (storeName?.trim()) plan.storeName = storeName.trim();
       const theme = themeForStyle(styleKeyword);
+      const productsMatchedNiche = productsMatchNiche(products, niche);
 
       const draft = await ensureDraftStore({
         name: plan.storeName,
@@ -153,13 +183,21 @@ export function createCofounderTools(opts: { tenantId: string }) {
         tagline: plan.tagline,
         theme,
         productCount: products.length,
-        note: "This is a real, saved draft — not live yet. Call launch_store with this storeId only if the merchant explicitly wants it live now.",
+        productsMatchedNiche,
+        note: [
+          "This is a real, saved draft — not live yet. Call launch_store with this storeId only if the merchant explicitly wants it live now.",
+          productsMatchedNiche
+            ? null
+            : `productsMatchedNiche is false: none of the ${products.length} products on this draft actually match "${niche}" — the catalog had nothing for that niche, so it was built around whatever was available. Say so plainly in your reply (the merchant will want to swap the products, or pick a niche the catalog covers) — never present this as a store built around ${niche}.`,
+        ]
+          .filter(Boolean)
+          .join(" "),
       });
     },
     {
       name: "build_store",
       description:
-        "Build a real store around an idea: generates a full store plan (name, tagline, colors, hero copy, SEO) and saves it as a genuine draft the merchant can open and review. Pass productIds from a prior suggest_products call to build around specific picks, or omit it to auto-pick products for the niche. Does NOT make the store live — call launch_store separately for that.",
+        "Build a real store around an idea: generates a full store plan (name, tagline, colors, hero copy, SEO) and saves it as a genuine draft the merchant can open and review. Pass productIds from a prior suggest_products call to build around specific picks, or omit it to auto-pick products for the niche. A storeName the merchant gave is used verbatim. The result's productsMatchedNiche tells you whether the products on the draft actually match the niche — if false, say so plainly, never present it as a store built around that niche. Does NOT make the store live — call launch_store separately for that.",
       schema: z.object({
         niche: z.string().describe("What the store sells, e.g. 'handmade leather bags'"),
         audience: z.string().optional().describe("Who buys it / where"),
@@ -225,7 +263,7 @@ export function createCofounderTools(opts: { tenantId: string }) {
     {
       name: "edit_store_content",
       description:
-        "Edit an existing store's own content — headline, tagline, brand colors, about text, SEO title/description, collections, announcement bar, footer, or a whole custom page (Contact Us, FAQ, etc). Also the right tool for SEO analysis/improvement requests for this store. NEVER use this for a blog post — a blog post is a completely separate feature (see write_blog_post) from a custom page, even though both start from 'add a...'. Give the full instruction in plain English, e.g. 'improve the SEO' or 'make the headline shorter and use a deep green'.",
+        "Edit an existing store's own content — headline, tagline, brand colors, about text, SEO title/description, collections, announcement bar, footer, or a whole custom page (Contact Us, FAQ, etc). Also the right tool for SEO analysis/improvement requests for this store. NEVER use this for a blog post — a blog post is a completely separate feature (see write_blog_post) from a custom page, even though both start from 'add a...'. Give the full instruction in plain English, e.g. 'improve the SEO' or 'make the headline shorter and use a deep green'. The editor sees ONLY this instruction — none of this conversation — so make it fully self-contained: include the store name, and any target market, keywords, products, audience, tone or constraint the merchant mentioned earlier in this conversation (e.g. 'improve the SEO for Coastal Co — target market is the UK, main keywords leather bags and handmade satchels').",
       schema: z.object({ storeId: z.string(), instruction: z.string() }),
     },
   );
@@ -258,7 +296,7 @@ export function createCofounderTools(opts: { tenantId: string }) {
     {
       name: "ask_business_advisor",
       description:
-        "Get a real, grounded answer about ONE specific store's own numbers, orders, catalog, or (for a connected Shopify store) live shop status — has direct read access to that store's actual data. Use for a deep or precise question about one named store, not a portfolio-wide question (the snapshot already covers those) — e.g. 'why are Nomad Threads' conversions down' or 'what's actually in Coastal Co's catalog right now' calls this tool; 'which of my stores has the weakest SEO' or 'how's the business doing overall' stays with the snapshot you already have, even though both compare across stores in some sense — the line is whether the answer needs ONE store's live/detailed data (this tool) or is answerable from the portfolio-level numbers already summarised for you (the snapshot). For a genuine per-store comparison across several stores, prefer answering from the snapshot first and only fall back to calling this once per store if the snapshot genuinely doesn't have what's being asked.",
+        "Get a real, grounded answer about ONE specific store's own numbers, orders, catalog, or (for a connected Shopify store) live shop status — has direct read access to that store's actual data. Use for a deep or precise question about one named store, not a portfolio-wide question (the snapshot already covers those) — e.g. 'why are Nomad Threads' conversions down' or 'what's actually in Coastal Co's catalog right now' calls this tool; 'which of my stores has the weakest SEO' or 'how's the business doing overall' stays with the snapshot you already have, even though both compare across stores in some sense — the line is whether the answer needs ONE store's live/detailed data (this tool) or is answerable from the portfolio-level numbers already summarised for you (the snapshot). For a genuine per-store comparison across several stores, prefer answering from the snapshot first and only fall back to calling this once per store if the snapshot genuinely doesn't have what's being asked. The advisor sees ONLY the question — none of this conversation — so make it fully self-contained: name the store, the exact time range (dates, not 'recently'), and any products, market, keywords or focus the merchant stated earlier in this conversation.",
       schema: z.object({ storeId: z.string(), question: z.string() }),
     },
   );

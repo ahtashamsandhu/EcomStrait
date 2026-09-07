@@ -4,7 +4,8 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@ecomstrait/auth/server";
 import type { PostStatus, PostSource } from "@ecomstrait/db";
 import { assertTokenBudget, recordTokenUsage } from "@/lib/entitlements";
-import { generateBlogDraft } from "@/lib/ecomai";
+import { generateBlogDraft, type BlogContext } from "@/lib/ecomai";
+import { normalizePlan } from "@/lib/store-plan";
 
 /**
  * Blog post authoring — both halves of "AI writes the content, merchant can
@@ -71,7 +72,7 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
 type OwnStoreResult =
   | { ok: false; error: string }
-  | { ok: true; supabase: SupabaseServerClient; store: { id: string; name: string | null } };
+  | { ok: true; supabase: SupabaseServerClient; store: { id: string; name: string | null; content: unknown } };
 
 async function ownStore(storeId: string): Promise<OwnStoreResult> {
   const supabase = await createClient();
@@ -81,12 +82,50 @@ async function ownStore(storeId: string): Promise<OwnStoreResult> {
   if (!user) return { ok: false, error: "Not authenticated." };
   const { data: store } = await supabase
     .from("stores")
-    .select("id, name")
+    .select("id, name, content")
     .eq("id", storeId)
     .eq("user_id", user.id)
     .maybeSingle();
   if (!store) return { ok: false, error: "Store not found." };
   return { ok: true, supabase, store };
+}
+
+/**
+ * The real facts the blog writer gets to work from — the plan's about/
+ * tagline/collections, the store's listed products (same two-step
+ * `store_products` → `products` pattern as `storefront.ts`), and the titles
+ * already posted so the draft doesn't repeat one. Any part that fails to
+ * load is simply omitted; the draft still generates from the rest
+ * (2026-09-07 capability audit, T6/§5.1/§5.5).
+ */
+async function blogContextFor(
+  supabase: SupabaseServerClient,
+  store: { id: string; name: string | null; content: unknown },
+): Promise<BlogContext> {
+  const plan = normalizePlan(store.content, store.name ?? "the store");
+  const context: BlogContext = {
+    about: plan.about || null,
+    tagline: plan.tagline || null,
+    collections: plan.collections,
+  };
+
+  const [{ data: listings }, { data: posts }] = await Promise.all([
+    supabase.from("store_products").select("product_id").eq("store_id", store.id).eq("status", "approved"),
+    supabase.from("store_posts").select("title").eq("store_id", store.id).order("created_at", { ascending: false }).limit(20),
+  ]);
+
+  const ids = (listings ?? []).map((r) => r.product_id);
+  if (ids.length) {
+    const { data: products } = await supabase
+      .from("products")
+      .select("title, category")
+      .in("id", ids)
+      .eq("status", "published")
+      .limit(30);
+    context.products = (products ?? []).map((p) => ({ title: p.title, category: p.category }));
+  }
+  context.existingPostTitles = (posts ?? []).map((p) => p.title);
+  return context;
 }
 
 function slugify(title: string): string {
@@ -168,10 +207,12 @@ export async function generatePostDraft(
   if (!s.ok) return { error: s.error };
   if (topic.trim().length < 2) return { error: "Tell me what the post should be about." };
 
-  const budget = await assertTokenBudget(900);
+  // Sized to the writer's own maxTokens (a 600-900 word body, ~2000 tokens).
+  const budget = await assertTokenBudget(2000);
   if (!budget.ok) return { error: budget.error, upgrade: true };
 
-  const { draft, tokensUsed } = await generateBlogDraft(topic, s.store.name ?? "the store");
+  const context = await blogContextFor(s.supabase, s.store);
+  const { draft, tokensUsed } = await generateBlogDraft(topic, s.store.name ?? "the store", context);
   await recordTokenUsage(tokensUsed);
 
   const slug = await uniqueSlug(s.supabase, storeId, slugify(draft.title));

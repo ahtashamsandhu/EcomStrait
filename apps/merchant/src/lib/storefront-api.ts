@@ -44,6 +44,13 @@ export type ApiProduct = {
   fitNote: string | null;
   /** Merchant-set, per store — see store_products.shipping_note. */
   shippingNote: string | null;
+  /** Supplier-authored (or EcomAI-enriched) page metadata — products.seo_title /
+   *  seo_description. Until 2026-09-07 these never reached a storefront page
+   *  (capability audit §14.3); the product detail pages' generateMetadata now
+   *  prefers them over the title/description fallbacks. Optional so the
+   *  builder's and gallery's hand-built demo products need not carry them. */
+  seoTitle?: string | null;
+  seoDescription?: string | null;
 };
 
 export type CartLine = {
@@ -175,6 +182,8 @@ function toApiProduct(
     sizes: string | null;
     material: string | null;
     fit_note: string | null;
+    seo_title: string | null;
+    seo_description: string | null;
   },
   listing: Listing | undefined,
 ): ApiProduct {
@@ -202,11 +211,13 @@ function toApiProduct(
     material: p.material,
     fitNote: p.fit_note,
     shippingNote: listing?.shippingNote ?? null,
+    seoTitle: p.seo_title?.trim() || null,
+    seoDescription: p.seo_description?.trim() || null,
   };
 }
 
 const PRODUCT_COLUMNS =
-  "id, title, description, category, images, retail_price, stock, reserved, status, sizes, material, fit_note";
+  "id, title, description, category, images, retail_price, stock, reserved, status, sizes, material, fit_note, seo_title, seo_description";
 
 export type ProductQuery = { q?: string; category?: string; page?: number; limit?: number };
 

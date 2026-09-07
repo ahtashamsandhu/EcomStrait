@@ -1,6 +1,9 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "1d521ee801696eab8c65fcebdb2136cf"
+# The app's client id is NOT committed. Copy it from the Partner dashboard
+# (App setup -> Client ID) into this line and into SHOPIFY_API_KEY in .env, or
+# run `shopify app config link` which fills it in from the dashboard for you.
+client_id = "<your-client-id>"
 name = "EcomStraitAI"
 application_url = "https://shopify-ten-jet.vercel.app"
 embedded = true

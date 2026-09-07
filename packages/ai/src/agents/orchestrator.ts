@@ -51,7 +51,31 @@ export type OrchestratorInput = {
    * pass this.
    */
   context?: string;
+  /**
+   * Prior turns of this thread, oldest first, so "and last week?" or "same
+   * for the other product" has something to refer to. Only the last
+   * `HISTORY_MAX_TURNS` are used, each capped at `HISTORY_MAX_CHARS`; the
+   * caller is expected to load these from `ai_agent_runs` (or its own chat
+   * memory) — this package never reads them back itself.
+   */
+  history?: OrchestratorHistoryTurn[];
 };
+
+export type OrchestratorHistoryTurn = { role: "user" | "assistant"; content: string };
+
+/** Last N prior turns handed to the specialist; older ones are dropped. */
+const HISTORY_MAX_TURNS = 8;
+/** Per-turn cap — a long advisor reply shouldn't crowd out the new question. */
+const HISTORY_MAX_CHARS = 2000;
+/** How many prior *user* turns the router sees as context. */
+const ROUTER_HISTORY_USER_TURNS = 2;
+
+function trimHistory(history: OrchestratorHistoryTurn[] | undefined): OrchestratorHistoryTurn[] {
+  return (history ?? [])
+    .filter((t) => typeof t.content === "string" && t.content.trim())
+    .slice(-HISTORY_MAX_TURNS)
+    .map((t) => ({ role: t.role, content: t.content.length > HISTORY_MAX_CHARS ? t.content.slice(0, HISTORY_MAX_CHARS) + " …" : t.content }));
+}
 
 export type OrchestratorResult = {
   reply: string;
@@ -82,6 +106,7 @@ export async function runOrchestrator(input: OrchestratorInput): Promise<Orchest
   }
 
   const router = createChatModel("fast-cheap", { temperature: 0 });
+  const history = trimHistory(input.history);
 
   // All nodes are declared before any edge referencing them — the fluent
   // builder infers each `addNode`'s node-name type incrementally, so an edge
@@ -89,7 +114,17 @@ export async function runOrchestrator(input: OrchestratorInput): Promise<Orchest
   const graph = new StateGraph(OrchestratorState)
     .addNode("router", async (state) => {
       const last = state.messages[state.messages.length - 1];
-      const question = typeof last?.content === "string" ? last.content : String(last?.content ?? "");
+      const question = last ? contentToText(last.content) : "";
+      // A fragment like "and last week?" only classifies correctly with the
+      // turn(s) it continues — give the router the last couple of prior user
+      // turns as brief context, but keep the message it classifies distinct.
+      const priorUserTurns = history
+        .filter((t) => t.role === "user")
+        .slice(-ROUTER_HISTORY_USER_TURNS)
+        .map((t) => (t.content.length > 300 ? t.content.slice(0, 300) + " …" : t.content));
+      const routerInput = priorUserTurns.length
+        ? `Earlier the merchant asked: ${priorUserTurns.map((t) => JSON.stringify(t)).join(" then ")}\n\nNow classify this message: ${question}`
+        : question;
       const decision = await router.invoke([
         {
           role: "system",
@@ -109,10 +144,13 @@ export async function runOrchestrator(input: OrchestratorInput): Promise<Orchest
             "ambiguous case: it needs a real number to open with, but also a recommendation — route the ",
             "whole thing to advisor rather than splitting one question across two specialists, since ",
             "advisor can query the same data itself)\n",
+            "If the message is preceded by \"Earlier the merchant asked:\", that is context only — classify ",
+            "the message after \"Now classify this message:\" in light of it (a fragment like \"and last ",
+            "week?\" after a revenue question is analytics).\n",
             "Reply with exactly one word: analytics or advisor.",
           ].join(""),
         },
-        { role: "user", content: question },
+        { role: "user", content: routerInput },
       ]);
       const text = contentToText(decision.content).toLowerCase();
       return { route: (text.includes("analytics") ? "analytics" : "advisor") as Route };
@@ -136,9 +174,17 @@ export async function runOrchestrator(input: OrchestratorInput): Promise<Orchest
     .addEdge("analytics_agent", END)
     .compile();
 
-  const initialMessages: BaseMessage[] = input.context
-    ? [new SystemMessage(input.context), new HumanMessage(input.message)]
-    : [new HumanMessage(input.message)];
+  // System context first, then prior turns (oldest first) as plain
+  // Human/AI messages, then the new question — so the specialist sees the
+  // conversation it's continuing, not just one message (audit T5, 6.2, 7.6).
+  const historyMessages: BaseMessage[] = history.map((t) =>
+    t.role === "user" ? new HumanMessage(t.content) : new AIMessage(t.content),
+  );
+  const initialMessages: BaseMessage[] = [
+    ...(input.context ? [new SystemMessage(input.context)] : []),
+    ...historyMessages,
+    new HumanMessage(input.message),
+  ];
 
   const final = await graph.invoke({ messages: initialMessages, route: "advisor" });
 

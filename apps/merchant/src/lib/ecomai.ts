@@ -76,6 +76,17 @@ export type PlanAnswers = {
   storeName?: string | null;
 };
 
+/** A product as the plan/edit prompts want to see it — title plus the real
+ *  category and price, so collections can be grouped and price-level copy
+ *  can match the catalog (2026-09-07 capability audit, §3.2/§3.7). */
+export type PromptProduct = { title: string; category?: string | null; price?: number | null };
+
+/** "Blue Canvas Tote (Bags, $24)" — one line per product, omitting whatever's unknown. */
+function describeProduct(p: PromptProduct): string {
+  const meta = [p.category?.trim() || null, typeof p.price === "number" ? `$${p.price}` : null].filter(Boolean);
+  return meta.length ? `${p.title} (${meta.join(", ")})` : p.title;
+}
+
 function presetPlan(answers: PlanAnswers): StorePlan {
   const niche = answers.niche.trim().replace(/\.$/, "") || "your products";
   const name =
@@ -131,7 +142,12 @@ export type ConverseResult = {
 
 const BUILDER_SYSTEM = [
   "You are EcomAI, helping an entrepreneur set up an online store through a short, natural conversation.",
-  "You need to learn: what they sell (niche), who their customers are (audience), what visual style/vibe fits their brand, and what to name the store.",
+  "You need to learn: what they sell (niche), who their customers are AND which country/market they",
+  "sell into (audience — one question covering both, e.g. \"Who are your customers, and which country",
+  "are you selling to?\"), what visual style/vibe fits their brand, and what to name the store. The",
+  "market matters: it decides currency, spelling, and the search terms the store's copy targets. If",
+  "they answer only one half (just the people, or just the country), one short follow-up for the",
+  "other half is fine — then move on, never ask a third time.",
   "Ask ONE short, conversational question at a time — never a list, never more than one question in a message.",
   "Don't drag this out: once you have enough to build a good store — often after 2-4 of their replies — stop asking.",
   "The store name is the one thing you must always actually ask about before finishing, even once",
@@ -193,6 +209,17 @@ const BUILDER_SYSTEM = [
   "                 what they actually said or asked, in reply, first. done=false. Only return to a",
   "                 pending question afterward, and only if it still makes sense to right then.",
   "",
+  "Worked examples (message → type), mid-conversation, whatever you'd just asked:",
+  "- \"handmade leather bags\" → answer (niche = \"handmade leather bags\")",
+  "- \"young professionals in the UK\" → answer (audience = \"young professionals in the UK\" — who AND where)",
+  "- \"modern, and call it Coastal Co\" → answer (styleKeyword = \"modern\", storeName = \"Coastal Co\" — two fields from one message is fine)",
+  "- \"hmm what sells well for gifts?\" → show_products (they want to see options; niche stays as it was — \"gifts\" is not an answer yet)",
+  "- \"you decide the name\" → answer (storeName delegated → stays null; done can now be true if niche is known)",
+  "- \"suggest a few names\" → answer (propose 2-4 names in reply, storeName stays null, done=false — NOT show_products)",
+  "- \"you\" → other (bare fragment — ask what they meant, change no field)",
+  "- \"actually can I change the style later?\" → other (answer it — yes, everything is editable after the build — then return to your pending question)",
+  "- \"what do you mean by style?\" → other (explain briefly with two or three example vibes, then wait)",
+  "",
   "Warm, confident, concise. No hype, no emojis.",
   "Whatever the type, always fill in niche/audience/styleKeyword/storeName from the WHOLE",
   "conversation so far, not just this one message — a fact learned two turns ago is still known now.",
@@ -201,7 +228,9 @@ const BUILDER_SYSTEM = [
   '{ "type": "answer" | "show_products" | "other", "done": boolean, "reply": string, "niche": string | null, "audience": string | null, "styleKeyword": string | null, "storeName": string | null }',
   "",
   '"niche" is a short phrase for what they sell (e.g. "handmade leather bags") — fill in your best guess as you learn more, null until you know anything.',
-  '"audience" is a short phrase for who buys it / where, or null if still open or they delegated it',
+  '"audience" is a short phrase for who buys it AND where — carry the country/market in it whenever',
+  '  they gave one (e.g. "young professionals in the UK", "parents in Pakistan", "UK buyers") — or null',
+  "  if still open or they delegated it",
   "  (never store the delegation phrase itself, e.g. \"you decide\" is not a real audience — pick a",
   "  sensible default yourself when you build, same as an unanswered question, rather than writing",
   "  their words into the field).",
@@ -210,10 +239,13 @@ const BUILDER_SYSTEM = [
   '"storeName" is what they want it called, once said — null if still open or they delegated it.',
   '"reply" is your next question for type "answer", your lead-in for "show_products", or your',
   '  response to whatever they said for "other".',
-  'done=true only ever applies to type "answer", once you have enough — "reply" is then a short',
-  '  one-line wrap-up (e.g. "Got it — building your store.") and "niche" must be filled in. Also',
-  "  never true unless the store name has actually come up in the conversation (given, or asked",
-  "  and delegated) — see the store-name rule above.",
+  'done=true only ever applies to type "answer", once you have enough — "reply" is then ONE',
+  "  sentence that restates exactly what you're about to build, so a misheard detail gets caught",
+  "  before a store exists: the niche, the audience/market, the style, and the name — or \"a name",
+  '  I\'ll pick" when they delegated it. E.g. "Building a minimal-style store called Coastal Co',
+  '  selling handmade leather bags to UK buyers." Never the bare "Got it — building your store."',
+  '  "niche" must be filled in. Also never true unless the store name has actually come up in the',
+  "  conversation (given, or asked and delegated) — see the store-name rule above.",
 ].join("\n");
 
 /** The old fixed 4-question script, kept only as this conversation's no-gateway fallback. */
@@ -233,6 +265,24 @@ function isSkippedAnswer(text: string): boolean {
   return /^(skip|none|no|na|-|you pick|you decide|whatever|not sure|no idea|i ?dk|i don'?t know|doesn'?t matter|any|surprise( me)?)$/i.test(
     text.trim(),
   );
+}
+
+/**
+ * The one-sentence "here's what I'm about to build" recap the prompt asks for
+ * on done=true — used only when the model returned no reply text of its own
+ * (and by the no-gateway fallback), so the merchant never gets the bare
+ * "Got it — building your store." with nothing to check against.
+ */
+function buildRecap(
+  niche: string | null,
+  audience: string | null,
+  styleKeyword: string | null,
+  storeName: string | null,
+): string {
+  const style = styleKeyword ? `${styleKeyword}-style ` : "";
+  const name = storeName ? `called ${storeName}` : "with a name I'll pick";
+  const who = audience ? ` for ${audience}` : "";
+  return `Building a ${style}store ${name} selling ${niche ?? "your products"}${who}.`;
 }
 
 function presetConverse(history: BuilderTurn[], context: BuilderKnownContext): ConverseResult {
@@ -259,13 +309,17 @@ function presetConverse(history: BuilderTurn[], context: BuilderKnownContext): C
     return v && !isSkippedAnswer(v) ? v.trim() : null;
   };
 
+  const niche = context.inferredNiche ?? pick("niche");
+  const audience = pick("audience");
+  const styleKeyword = context.presetTheme ?? pick("style");
+  const storeName = pick("storeName");
   return {
     done: true,
-    reply: "Got it — building your store.",
-    niche: context.inferredNiche ?? pick("niche"),
-    audience: pick("audience"),
-    styleKeyword: context.presetTheme ?? pick("style"),
-    storeName: pick("storeName"),
+    reply: buildRecap(niche, audience, styleKeyword, storeName),
+    niche,
+    audience,
+    styleKeyword,
+    storeName,
     tokensUsed: 0,
   };
 }
@@ -360,7 +414,11 @@ async function converseBuilderOnce(
   const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
   const niche = str(parsed.niche) ?? context.inferredNiche ?? null;
   const styleKeyword = str(parsed.styleKeyword) ?? context.presetTheme ?? null;
-  const reply = str(parsed.reply) ?? (parsed.done ? "Got it — building your store." : "Tell me a bit more.");
+  const reply =
+    str(parsed.reply) ??
+    (parsed.done
+      ? buildRecap(niche, str(parsed.audience), styleKeyword, str(parsed.storeName))
+      : "Tell me a bit more.");
   // Asking to see products is never "done" — showing options isn't the
   // same as having enough to build, whatever the model said alongside it.
   // "other" (a real question, confusion, off-topic) isn't "done" either —
@@ -431,6 +489,13 @@ export type PageAction = {
   title?: string;
   /** Plain text, paragraphs separated by a blank line. Omitted for a delete. */
   body?: string;
+};
+
+/** See `applyMerchantRequest`'s `storeContext` parameter. */
+export type StoreContext = {
+  products?: PromptProduct[];
+  existingPosts?: { title: string; slug: string }[];
+  country?: string | null;
 };
 
 export type MerchantReply = {
@@ -550,17 +615,41 @@ const MERCHANT_SYSTEM = [
   '              case leave changes empty and use reply to ask exactly what',
   "              they want it to say — that is still intent \"edit\", not",
   '              "question": you already know how to make this change, you',
-  "              just need one more detail before you can.",
-  "                SEO requests specifically (\"improve my SEO\", \"is my SEO",
-  "                good\", \"what keywords should I target\") are also \"edit\":",
-  "                you already see the current seoTitle/seoDescription/about",
-  "                below — actually look at them and call out concrete gaps in",
-  "                reply (missing or too-short meta description, a generic",
-  "                title, thin about text), not a vague \"looks fine\". Propose",
-  "                improved seoTitle/seoDescription in changes when you have",
-  "                enough context to write something real; ask what to focus",
-  "                on (a product line, a location, a differentiator) when you",
-  "                don't, rather than inventing generic keywords.",
+  "              just need one more detail before you can. The same applies to",
+  "              \"change it back\" / \"undo that\": you have no record of the",
+  "              previous value, so ask which field and what it should say.",
+  "                SEO requests (\"improve my SEO\", \"is my SEO good\", \"what",
+  "                keywords should I target\", \"audit my SEO\") are also \"edit\",",
+  "                and follow this method every time:",
+  "                1. Derive ONE primary keyword and 2-3 secondary keywords from",
+  "                   what the store actually sells and where: the products and",
+  "                   market listed below when given, else the plan's own",
+  "                   collections/about/tagline. A keyword is the phrase a",
+  "                   buyer would type (\"handmade leather bags UK\"), not a",
+  "                   brand adjective. If neither source says what the store",
+  "                   sells or where, ask for the product focus and market",
+  "                   first — never invent keywords.",
+  "                2. Check where the primary keyword is missing: seoTitle, the",
+  "                   FIRST sentence of seoDescription, and about. Those are",
+  "                   the gaps — name them specifically in reply, never a",
+  "                   vague \"looks fine\".",
+  "                3. Rewrite only what's actually weak: seoTitle as",
+  "                   \"Primary Keyword – Store Name\" <= 60 chars; seoDescription",
+  "                   120-155 chars with the keyword in its first half, one",
+  "                   USP, and a call to action; about's first sentence naming",
+  "                   the niche and market. Work secondary keywords into",
+  "                   about/heroSub naturally — never stuffed, never a list.",
+  "                4. Never change storeName in an SEO pass unless they",
+  "                   explicitly asked to rename the store.",
+  "                5. In reply, name the keyword you targeted and the specific",
+  "                   gap you fixed (\"Targeted 'handmade leather bags UK' — the",
+  "                   title had no product word and the description had no call",
+  "                   to action\").",
+  "                Scope: on this platform about text, page bodies and blog",
+  "                bodies are plain text — there are no headings, schema",
+  "                markup, image alt text, or internal links to edit here.",
+  "                Never recommend those as things to do; if asked, say the",
+  "                platform doesn't support them yet.",
   '"page"        they want to add, change, or remove a WHOLE PAGE — "add a',
   '              Contact Us page", "make a FAQ page", "remove the Shipping',
   '              page", "update the About page to mention our new hours".',
@@ -576,6 +665,12 @@ const MERCHANT_SYSTEM = [
   '                slug    lowercase-hyphenated url segment, e.g. "contact-us".',
   '                        Reuse the existing slug when editing/removing a page',
   "                        already mentioned above.",
+  "                        DELETE ONLY ON AN EXACT MATCH: if what they said",
+  "                        doesn't unambiguously match exactly one existing",
+  "                        page by slug or title (none match, or two could),",
+  "                        set page to null and ask which one in reply, naming",
+  "                        the candidates — never delete on a guess; a deleted",
+  "                        page can't be restored.",
   "                title   the page's heading. Omit for a delete.",
   "                body    the page's content: plain text, a blank line between",
   "                        paragraphs, no markdown. Write real content using",
@@ -603,20 +698,65 @@ const MERCHANT_SYSTEM = [
   '              and page must be empty/null. Never use "question" for a',
   "              request to change the store's own presentation — see \"edit\"",
   "              and \"page\" above, which cover that even when incomplete.",
+  "              For how-does-the-dashboard-work questions, answer ONLY from",
+  "              the section manifest below: say in one line what the section",
+  "              is for and tell them to open it. Never describe buttons,",
+  "              steps, or capabilities that aren't written there — if the",
+  "              manifest doesn't answer it, say you're not sure and point",
+  "              them at the closest section.",
   '"unsupported" they want something genuinely outside this chat — adding a',
   "              SPECIFIC product they already have in mind (not asking for",
   '              suggestions — see "suggest_products" above), writing/adding a',
   "              blog post (see the note under \"page\" above), uploading",
   "              images, prices, shipping rates, payments, domains — anything",
   "              that isn't a store-plan field or a page. Say so plainly and",
-  "              point them at the real dashboard section that handles it —",
-  '              never invent a section name. The only sections that exist',
-  '              are: "Find Products" (browse products and add them to a',
-  '              store), "Selected Inventory" (products already chosen,',
-  '              before a store is built), "Stores", "Orders", "Sales",',
-  '              "Wallet", "Billing", "Settings", and, for a launched store,',
-  '              its own "Blog" screen (Stores → this store → Blog). There is',
-  '              no "Products" section and no "Navigation" section.',
+  "              point them at the real dashboard section that handles it,",
+  "              from the manifest below — never invent a section name or a",
+  "              capability that isn't listed there.",
+  "",
+  "Worked examples (message → intent):",
+  '- "add a returns section to the about text" → edit (changes.about, appended)',
+  '- "add a returns page" → page (create, slug "returns"; ask what the policy says if you weren\'t told)',
+  '- "what should our returns policy say" → question (advise in reply; change nothing)',
+  '- "add a post about returns" → unsupported (blog posts live on the store\'s Blog screen)',
+  '- "change it back" → edit, changes empty, reply asks which field and to what — there is no record of the previous value',
+  '- "make the headline punchier" → edit (rewrite heroHeadline; you have enough to act)',
+  '- "how\'s my SEO" → edit (run the SEO method above)',
+  '- "what sells well in this niche" → suggest_products',
+  '- "delete the shipping page" when the pages are "shipping-info" and "shipping-returns" → page with page null, reply asks which of the two',
+  '- "how do I connect my own domain" → question (Settings, per store — say that and tell them to open it)',
+  '- "upload a new hero image" → unsupported (the Content editor under Stores → this store → Edit with EcomAI)',
+  '- "add my blue canvas tote to the store" → unsupported (Find Products adds specific products)',
+  "",
+  "Dashboard sections — the ONLY ones that exist, and what each actually does:",
+  '  "Overview"            read-only: plan, AI tokens used today, store count.',
+  '  "Find Products"       search and filter supplier products (by supplier or category), see',
+  "                        cost/sell price/margin/stock, and add a product to a store (or to the",
+  "                        pre-launch selection). Product data itself can't be edited there.",
+  '  "Selected Inventory"  products already chosen or listed: edit the sell price (within the',
+  "                        supplier's floor), add a shipping/returns note, remove a listing, see",
+  "                        the supplier's approval status. It cannot edit product titles, images,",
+  "                        cost or supplier.",
+  '  "Store Builder"       chat-driven build of a NEW store, with preview and launch.',
+  '  "Stores"              every store, with per-store actions: preview, resume or discard a',
+  "                        draft, Edit with EcomAI (this chat plus the Content editor for the",
+  "                        announcement, hero, about, sections and media, with version history),",
+  "                        Shopify provisioning/sync, launch checklist, archive/delete, and the",
+  "                        Blog link.",
+  '  "Blog"                Stores → this store → Blog: create a post from a title or AI-draft one',
+  "                        from a topic; edit title, slug, excerpt, cover image, body, SEO title",
+  "                        and description; publish/unpublish; delete.",
+  '  "Orders"              read-only list of orders: customer, items, total, payment and',
+  "                        fulfilment status. No fulfil/refund/cancel actions there.",
+  '  "Sales"               read-only analytics: net revenue, gross sales, orders, average order,',
+  "                        units, pending payout, a 14-day chart, top products.",
+  '  "Wallet"              add credits, withdraw funds, transaction history, held orders.',
+  '  "Billing"             plan tiers and daily AI token limits; upgrade or manage billing.',
+  '  "Settings"            profile name/avatar, email, password — and per store: rename it and',
+  "                        connect a custom domain (DNS records, verify).",
+  '  "Co-Founder"          a chat about the whole business (revenue, orders, wallet) — advice.',
+  '  There is no "Products" section, no "Navigation" section, and no manual pages editor —',
+  "  custom pages exist only through this chat.",
   "",
   "Fields allowed in changes:",
   "  storeName, tagline, heroHeadline, heroSub, about, seoTitle, seoDescription,",
@@ -653,6 +793,13 @@ export async function applyMerchantRequest(
    *  memory it gets of anything said earlier in the conversation. See
    *  `Docs/prompts/merchant-chat-edit-and-pages.md`. */
   conversationSummary?: string | null,
+  /** Real facts about the store beyond its plan fields — what it actually
+   *  sells, what's already been posted, where it sells — so an SEO pass can
+   *  derive keywords from the catalog instead of guessing, and a "what
+   *  should I write about" question can see what's already there. All
+   *  optional; callers that don't have them keep working unchanged
+   *  (2026-09-07 capability audit, §1.1/§1.6/§4.7). */
+  storeContext?: StoreContext,
 ): Promise<MerchantReply> {
   const text = instruction.trim();
   if (text.length < 2) {
@@ -677,6 +824,25 @@ export async function applyMerchantRequest(
   const visible: Record<string, unknown> = {};
   for (const f of EDITABLE) if (plan[f] !== undefined) visible[f] = plan[f];
 
+  const contextLines: string[] = [];
+  if (storeContext?.products?.length) {
+    contextLines.push(
+      `Products on this store (real, title (category, $price) where known): ${storeContext.products
+        .slice(0, 30)
+        .map(describeProduct)
+        .join("; ")}`,
+    );
+  }
+  if (storeContext?.existingPosts?.length) {
+    contextLines.push(
+      `Existing blog posts: ${storeContext.existingPosts
+        .slice(0, 20)
+        .map((p) => `${JSON.stringify(p.title)} (/blog/${p.slug})`)
+        .join(", ")}`,
+    );
+  }
+  if (storeContext?.country?.trim()) contextLines.push(`Market: ${storeContext.country.trim()}`);
+
   try {
     const { content, tokensUsed } = await chat(
       "workhorse",
@@ -686,7 +852,7 @@ export async function applyMerchantRequest(
           role: "user",
           content: `Current store (real, verified):\n${JSON.stringify(visible)}\n\nExisting pages: ${
             existingPages.length ? JSON.stringify(existingPages) : "(none yet)"
-          }${
+          }${contextLines.length ? `\n\n${contextLines.join("\n")}` : ""}${
             conversationSummary
               ? `\n\nYour own recollection of earlier in this conversation (a summary you wrote — may be imprecise, unlike the store data above; if it conflicts with what they're saying now, what they're saying now wins): ${conversationSummary}`
               : ""
@@ -765,6 +931,23 @@ export async function applyMerchantRequest(
         };
       }
       const action = rawAction === "delete" ? "delete" : rawAction === "update" ? "update" : "create";
+      // A delete is the one page action that can't be undone, so it only
+      // ever goes through on an exact slug match against the pages the
+      // caller said exist — the prompt asks the model to clarify instead of
+      // guessing, and this makes sure a guess can't slip past it (2026-09-07
+      // capability audit, T10/§4.2).
+      if (action === "delete" && slug && !existingPages.some((p) => p.slug === slug)) {
+        const names = existingPages.map((p) => `"${p.title}"`).join(", ");
+        return {
+          plan,
+          reply: existingPages.length
+            ? `I couldn't find a page matching "${slug}" — which one did you mean: ${names}?`
+            : "This store doesn't have any custom pages yet, so there's nothing to remove.",
+          changed: [],
+          tokensUsed,
+          intent: "page",
+        };
+      }
       // No slug means the model couldn't actually carry this out — treat it
       // like it had nothing to change, rather than reporting success.
       if (!slug) {
@@ -846,25 +1029,55 @@ const PLAN_SYSTEM = [
   "You are EcomAI, building an online store for an entrepreneur.",
   "Given a business idea and their selected products, return a concise, on-brand",
   "store plan. Warm, confident, no hype, no emojis in text fields.",
+  "",
+  "Before writing any copy, decide the brand brief in two lines for yourself: who exactly this store",
+  "is for, and why they'd buy here rather than anywhere else (one positioning, one USP, a tone that",
+  "fits the style given and the price level of the listed products). Output that brief nowhere —",
+  "write every field below from it, so tagline, hero, about and SEO all say the same thing to the",
+  "same customer instead of interchangeable store copy.",
+  "",
+  "Rules:",
+  "- storeName: if a Preferred name is given, storeName MUST be exactly that name, character for",
+  "  character — never improve, shorten, restyle or replace it. Only invent a name when none is given.",
+  "- collections: 3-5 names, and every one MUST group at least one of the listed products by its real",
+  "  category (the category shown in parentheses after each title). Never invent a collection that",
+  "  nothing listed fits — an empty collection on the storefront is worse than a missing one; fewer",
+  "  real collections beat more invented ones. With no products listed, use the niche's obvious",
+  "  sub-types.",
+  "- brandColors: exactly 3 hex colors in this order: [primary, accent, background]. Primary and",
+  "  accent sit behind white button text, so each must be dark or saturated enough for WCAG AA",
+  "  contrast (4.5:1) against #ffffff — no pastels, yellows, or light greys there. Background is a",
+  "  light neutral both read well on.",
+  "- Lengths: heroHeadline <= 60 characters, tagline <= 70, heroSub <= 140 — they wrap on phones.",
+  "- SEO: derive ONE primary keyword from the niche plus the market — the phrase a buyer would",
+  '  actually type, e.g. "handmade leather bags UK". seoTitle = "Primary Keyword – Store Name",',
+  "  <= 60 characters total (trim the keyword, never the name). seoDescription is 120-155 characters",
+  "  with the primary keyword in its first half, one USP from the brief, and a call to action.",
+  "  about is 2-3 sentences whose FIRST sentence names the niche and the market in plain words.",
+  "- Copy must match the products: price-level words (affordable, premium, luxury) must fit the",
+  "  listed prices — never call $9 products luxury or $400 ones budget.",
+  "- Never invent facts about the store or its products (materials, origins, guarantees, years in",
+  "  business) — write with authority about the category, not with claims you weren't given.",
+  "",
   "Respond with ONLY JSON using these exact keys:",
   "{",
-  '  "storeName": string,',
-  '  "tagline": string,',
-  '  "brandColors": string[],      // 3 hex colors',
-  '  "heroHeadline": string,',
-  '  "heroSub": string,',
-  '  "about": string,              // 2-3 sentences',
-  '  "collections": string[],      // 3-5 names',
-  '  "seoTitle": string,            // <= 60 chars, so a search result never truncates it',
-  '  "seoDescription": string       // 120-155 chars — same convention apps/supplier/src/lib/ai.ts uses',
+  '  "storeName": string,          // exactly the Preferred name when one is given',
+  '  "tagline": string,            // <= 70 chars',
+  '  "brandColors": string[],      // exactly 3 hex colors: [primary, accent, background]',
+  '  "heroHeadline": string,       // <= 60 chars',
+  '  "heroSub": string,            // <= 140 chars',
+  '  "about": string,              // 2-3 sentences; the first names the niche and the market',
+  '  "collections": string[],      // 3-5 names, each grouping at least one listed product',
+  '  "seoTitle": string,           // "Primary Keyword – Store Name", <= 60 chars',
+  '  "seoDescription": string      // 120-155 chars: keyword in the first half + USP + call to action',
   "}",
 ].join("\n");
 
-/** "Business: shoes. Customers: Pakistan. Style: minimal. Preferred name: G4Shoes" — the model's own context, not shown to the merchant. */
+/** "Business: shoes. Customers/market: Pakistan. Style: minimal. Preferred name: G4Shoes" — the model's own context, not shown to the merchant. */
 function describeIdea(answers: PlanAnswers): string {
   return [
     `Business: ${answers.niche}`,
-    answers.audience ? `Customers: ${answers.audience}` : "",
+    answers.audience ? `Customers/market: ${answers.audience}` : "",
     answers.styleKeyword ? `Style: ${answers.styleKeyword}` : "",
     answers.storeName ? `Preferred name: ${answers.storeName}` : "",
   ]
@@ -877,13 +1090,20 @@ const PLAN_ATTEMPTS = 2;
 export async function generateStorePlan(
   answers: PlanAnswers,
   productTitles: string[],
+  /** Optional richer view of the same products — when given, the model is
+   *  sent "title (category, $price)" lines instead of bare titles, and
+   *  `productTitles` is ignored. Callers that only have titles keep working. */
+  products?: PromptProduct[],
 ): Promise<{ plan: StorePlan; tokensUsed: number }> {
   if (!isGatewayConfigured() || answers.niche.trim().length < 2) {
     return { plan: presetPlan(answers), tokensUsed: 400 };
   }
 
-  const user = `Business idea: ${describeIdea(answers)}\nSelected products: ${
-    productTitles.slice(0, 20).join(", ") || "(none yet)"
+  const productLines = products?.length
+    ? products.slice(0, 20).map(describeProduct)
+    : productTitles.slice(0, 20);
+  const user = `Business idea: ${describeIdea(answers)}\nSelected products (title (category, $price) where known): ${
+    productLines.join("; ") || "(none yet)"
   }`;
 
   // A merchant's whole storefront is riding on this one call — worth one
@@ -903,9 +1123,14 @@ export async function generateStorePlan(
       );
       const p = JSON.parse(content) as Partial<StorePlan>;
       const base = presetPlan(answers);
+      // The prompt mandates the preferred name, but a merchant's chosen name
+      // is not something to leave to an instruction — pin it here so every
+      // caller (builder and Co-Founder alike) gets it without patching it
+      // back themselves (2026-09-07 capability audit, §3.1/§9.5).
+      const preferredName = answers.storeName?.trim();
       return {
         plan: {
-          storeName: p.storeName || base.storeName,
+          storeName: preferredName || p.storeName || base.storeName,
           tagline: p.tagline || base.tagline,
           brandColors: Array.isArray(p.brandColors) && p.brandColors.length ? p.brandColors.slice(0, 3) : base.brandColors,
           heroHeadline: p.heroHeadline || base.heroHeadline,
@@ -934,8 +1159,10 @@ export type BlogDraft = {
   title: string;
   /** One sentence — shown in the blog list, not the full post. */
   excerpt: string;
-  /** Plain text, paragraphs separated by a blank line — same minimal-markup
-   *  convention as `about`/section `body` elsewhere in a plan. */
+  /** Plain text, paragraphs separated by a blank line, plus two structural
+   *  line forms the storefront renderer understands: a line starting with
+   *  "## " is a subheading, consecutive lines starting with "- " are a bullet
+   *  list (see `blog-post-view.tsx`). No other markup. */
   body: string;
   seoTitle: string;
   seoDescription: string;
@@ -959,7 +1186,28 @@ function presetBlogDraft(topic: string, storeName: string): BlogDraft {
 const BLOG_SYSTEM = [
   "You are EcomAI, writing a blog post for an online store.",
   "Write genuinely useful, specific content for the topic given — not generic filler.",
-  "3-5 short paragraphs, plain text, a blank line between paragraphs. No markdown headings, no bullet lists, no emojis.",
+  "",
+  "Shape: 600-900 words. The body is plain text with exactly two kinds of structure: a line starting",
+  'with "## " is a subheading, and consecutive lines starting with "- " are bullet items. Everything',
+  "else is a paragraph; paragraphs, subheadings and bullet groups are separated by a blank line.",
+  "No other markdown — no bold, no links, no single-# headings, no emojis. Use 3-5 \"## \" sections",
+  "of 1-3 paragraphs each; bullets only where a list genuinely reads better than prose.",
+  "",
+  "Keyword: derive ONE primary keyword from the topic — the phrase a searcher would actually type.",
+  "The title contains it and is <= 65 characters. The body opens, before the first subheading, with a",
+  'one-sentence intro that states that keyword plainly. seoTitle = "Primary Keyword – Store Name",',
+  "<= 60 characters total. seoDescription is 120-155 characters with the keyword in its first half.",
+  "Use the keyword naturally — never stuff it.",
+  "",
+  "Close with a short call-to-action paragraph that names one REAL collection or product from the",
+  "context below (or the store generally when none was given) — never a made-up one. When the",
+  "context lists real products or collections, refer to them by name where they fit the topic;",
+  "still don't invent anything about them beyond their names and categories.",
+  "",
+  "When the context lists existing post titles, don't duplicate one: if the topic is essentially the",
+  "same as an existing post, choose a clearly different angle (a different reader, question, or",
+  "season) and say what that angle is in the excerpt.",
+  "",
   "Warm, confident, concrete — mention real specifics implied by the topic and the store rather than vague generalities.",
   "\"Concrete\" means write with authority in how you explain general, genuinely-true things about the",
   "topic itself (how a material behaves, what to look for, common mistakes) — it does NOT mean",
@@ -971,11 +1219,11 @@ const BLOG_SYSTEM = [
   "complete, write around it in general terms rather than inventing the specific.",
   "Respond with ONLY JSON using these exact keys:",
   "{",
-  '  "title": string,',
+  '  "title": string,          // <= 65 chars, contains the primary keyword',
   '  "excerpt": string,        // one sentence, shown in the blog list',
-  '  "body": string,           // the full post',
-  '  "seoTitle": string,       // <= 60 chars, so a search result never truncates it',
-  '  "seoDescription": string  // 120-155 chars — same convention apps/supplier/src/lib/ai.ts uses',
+  '  "body": string,           // the full post, 600-900 words, "## " subheadings and "- " bullets allowed',
+  '  "seoTitle": string,       // "Primary Keyword – Store Name", <= 60 chars',
+  '  "seoDescription": string  // 120-155 chars, keyword in the first half',
   "}",
 ].join("\n");
 
@@ -983,23 +1231,62 @@ const BLOG_SYSTEM = [
  * Draft a blog post from a topic — the AI-authored half of the blog system
  * (a merchant can also just write one from scratch; see blog-actions.ts).
  */
+/**
+ * What the writer knows about the store beyond its name — all optional, all
+ * real (read from the store row / its listings / its posts by the caller),
+ * so "be specific" and "never invent a store fact" stop contradicting each
+ * other (2026-09-07 capability audit, T6/§5.1).
+ */
+export type BlogContext = {
+  about?: string | null;
+  tagline?: string | null;
+  collections?: string[];
+  products?: { title: string; category?: string | null }[];
+  existingPostTitles?: string[];
+};
+
 export async function generateBlogDraft(
   topic: string,
   storeName: string,
+  context?: BlogContext,
 ): Promise<{ draft: BlogDraft; tokensUsed: number }> {
   if (!isGatewayConfigured() || topic.trim().length < 2) {
     return { draft: presetBlogDraft(topic, storeName), tokensUsed: 0 };
   }
+
+  const ctx: string[] = [`Store: ${storeName}`];
+  if (context?.tagline?.trim()) ctx.push(`Tagline: ${context.tagline.trim()}`);
+  if (context?.about?.trim()) ctx.push(`About: ${context.about.trim()}`);
+  if (context?.collections?.length) ctx.push(`Collections: ${context.collections.slice(0, 10).join(", ")}`);
+  if (context?.products?.length) {
+    ctx.push(
+      `Products on this store (real — name them where they fit): ${context.products
+        .slice(0, 30)
+        .map((p) => (p.category?.trim() ? `${p.title} (${p.category.trim()})` : p.title))
+        .join("; ")}`,
+    );
+  }
+  if (context?.existingPostTitles?.length) {
+    ctx.push(
+      `Existing blog posts (don't duplicate a topic): ${context.existingPostTitles
+        .slice(0, 20)
+        .map((t) => JSON.stringify(t))
+        .join(", ")}`,
+    );
+  }
+  ctx.push(`Blog post topic: ${topic}`);
 
   try {
     const { content, tokensUsed } = await chat(
       "workhorse",
       [
         { role: "system", content: BLOG_SYSTEM },
-        { role: "user", content: `Store: ${storeName}\nBlog post topic: ${topic}` },
+        { role: "user", content: ctx.join("\n") },
       ],
       // reasoningEffort: "none" — see the note in converseBuilder above.
-      { temperature: 0.7, maxTokens: 1200, responseFormatJson: true, timeoutMs: 20000, reasoningEffort: "none" },
+      // maxTokens sized for a 600-900 word body plus the other JSON fields
+      // (~2000 tokens); timeout raised to match the longer generation.
+      { temperature: 0.7, maxTokens: 2000, responseFormatJson: true, timeoutMs: 30000, reasoningEffort: "none" },
     );
     const p = JSON.parse(content) as Partial<BlogDraft>;
     const base = presetBlogDraft(topic, storeName);

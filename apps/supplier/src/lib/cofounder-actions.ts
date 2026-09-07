@@ -3,7 +3,12 @@
 import { loadChatThread, appendChatTurns } from "@ecomstrait/ai";
 import { requireApprovedSupplier } from "@/lib/supplier-context";
 import { getSupplierRevenueAnalytics, summarizeForAdvisor } from "@/lib/revenue-analytics";
-import { getSupplierAnalytics, summarizeCatalogForAdvisor } from "@/lib/analytics-data";
+import {
+  getSupplierAnalytics,
+  summarizeCatalogForAdvisor,
+  getPlatformDemand,
+  summarizeDemandForAdvisor,
+} from "@/lib/analytics-data";
 import { askCoFounder, type CoFounderTurn } from "@/lib/cofounder-ai";
 import { assertTokenBudget, getEntitlements, recordTokenUsage } from "@/lib/entitlements";
 
@@ -76,14 +81,26 @@ export async function askCoFounderAction(
   // combined into one digest — previously only revenue was wired in, so the
   // advisor had no way to answer anything about products, stock, or the
   // quality score.
-  const [revenue, catalog, thread] = await Promise.all([
+  const [revenue, catalog, demand, thread] = await Promise.all([
     getSupplierRevenueAnalytics(ctx.supabase, ctx.supplierId),
     supplier ? getSupplierAnalytics(ctx.supabase, supplier) : null,
+    // Platform-wide market context (aggregates only, never another
+    // supplier's rows) — null when the admin client isn't configured, in
+    // which case the line is simply omitted. Never let a failure here take
+    // the whole chat down: it's context, not the supplier's own numbers.
+    getPlatformDemand().catch((err) => {
+      console.error("[cofounder] platform demand lookup failed:", err);
+      return null;
+    }),
     // One thread per supplier business (not per staff account) — see
     // packages/ai/src/memory/chat-threads.ts.
     loadChatThread({ tenantId: ctx.supplierId, agent: "supplier_cofounder", threadKey: ctx.supplierId }),
   ]);
-  const snapshotLines = [summarizeForAdvisor(revenue), catalog ? summarizeCatalogForAdvisor(catalog) : null];
+  const snapshotLines = [
+    summarizeForAdvisor(revenue),
+    catalog ? summarizeCatalogForAdvisor(catalog) : null,
+    demand ? summarizeDemandForAdvisor(demand) : null,
+  ];
   // Hedged deliberately: this is an LLM-generated summary of earlier turns,
   // not a measured number like the lines above it — flag it as your own
   // (possibly imprecise) recollection so the model doesn't repeat it back

@@ -20,11 +20,13 @@ export const supabaseQueryTool = tool(
     description:
       "Run a parameterized, read-only (SELECT/WITH) SQL query against the platform database. " +
       "Use $1, $2, ... placeholders in `sql` and pass their values in `params`, in order. " +
+      "Aggregate in SQL (SUM/COUNT/GROUP BY); results are capped at 100 rows, so a row-list you count " +
+      "yourself is silently incomplete. " +
       "Schema — table: columns (tenant-scoping column called out in parens; always filter on it using " +
       "the tenant/store id given in the question, never join or return rows across tenants):\n" +
       "- stores (scope: user_id, the merchant/owner's user id): id, user_id, name, type " +
       "('shopify_shopify_theme'|'shopify_liquid_theme'|'own_platform'), status, domain, subdomain, " +
-      "shopify_store_id, launched_at, created_at.\n" +
+      "shopify_store_id, launched_at (when the store went live; null = not yet launched), created_at.\n" +
       "- store_orders, a merchant's own storefront checkout (scope: store_id -> stores.id): id, store_id, " +
       "customer_name, customer_email, subtotal, items (jsonb array of {product_id, supplier_id, name, " +
       "quantity, unit_price} — no separate line-items table for this order type), status, created_at.\n" +

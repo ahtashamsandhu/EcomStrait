@@ -15,20 +15,31 @@ import { requestApproval } from "@ecomstrait/ai";
  */
 export function createShopifyWriteTools(opts: { tenantId: string; storeId: string }) {
   const proposeSetPrice = tool(
-    async ({ productGid, price }: { productGid: string; price: number }) => {
+    async ({ productGid, price, rationale }: { productGid: string; price: number; rationale?: string }) => {
       const approval = await requestApproval({
         tenantId: opts.tenantId,
         threadId: opts.storeId,
         action: "shopify.set_product_price",
-        payload: { storeId: opts.storeId, productGid, price },
+        // `rationale` rides along in the payload so the approver sees the
+        // reasoning (wholesale floor, expected margin) next to the number;
+        // the approval route only reads storeId/productGid/price from it.
+        payload: { storeId: opts.storeId, productGid, price, ...(rationale ? { rationale } : {}) },
       });
-      return `I've requested approval to set this product's price to $${price} (approval id: ${approval.id}). Nothing has changed yet — a human needs to approve this first.`;
+      const why = rationale ? ` Rationale recorded with the request: ${rationale}` : "";
+      return `I've requested approval to set this product's price to $${price} (approval id: ${approval.id}). Nothing has changed yet — a human needs to approve this first.${why}`;
     },
     {
       name: "propose_set_product_price",
       description:
-        "Propose changing a product's price. Requires human approval — does not change anything immediately.",
-      schema: z.object({ productGid: z.string(), price: z.number().positive() }),
+        "Propose changing a product's price. Requires human approval — does not change anything immediately. " +
+        "Look up the product's wholesale_price (products.wholesale_price via run_sql_query) first: never propose " +
+        "a price at or below wholesale. Pass `rationale` with the wholesale price and the expected margin % " +
+        "((price - wholesale) / price) so the approver sees why, not just the number.",
+      schema: z.object({
+        productGid: z.string(),
+        price: z.number().positive(),
+        rationale: z.string().optional(),
+      }),
     },
   );
 
