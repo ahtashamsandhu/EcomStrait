@@ -38,6 +38,7 @@ export {
 export {
   loadChatThread,
   appendChatTurns,
+  clearChatThread,
   type ChatThreadMessage,
   type ChatAgent,
 } from "./memory/chat-threads";

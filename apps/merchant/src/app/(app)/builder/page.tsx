@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import type { Metadata } from "next";
 import { createClient } from "@ecomstrait/auth/server";
-import { loadChatThread } from "@ecomstrait/ai";
+import { loadChatThread, clearChatThread } from "@ecomstrait/ai";
 import { getEntitlements } from "@/lib/entitlements";
 import { getSelectedProducts } from "@/lib/catalog";
 import { storeThemes } from "@/content/themes";
@@ -67,6 +67,22 @@ export default async function BuilderPage({
       ])
     : [null, [], []];
 
+  // No draft yet, but maybe a conversation: the opening Q&A is saved turn by
+  // turn against a per-merchant pending thread (see converseBuilderTurn) so
+  // it survives a closed tab exactly like the Co-Founder chats do. Starting
+  // something explicitly new (a theme from the gallery, a basket from Find
+  // Suppliers) begins a fresh conversation, so the pending one is dropped.
+  const pendingKey = `pending:${user.id}`;
+  let pending: { role: "user" | "assistant"; content: string }[] = [];
+  if (!resumable) {
+    if (skipping) {
+      await clearChatThread({ tenantId: user.id, agent: "merchant_builder", threadKey: pendingKey });
+    } else {
+      pending = (await loadChatThread({ tenantId: user.id, agent: "merchant_builder", threadKey: pendingKey })).messages;
+    }
+  }
+  const pendingChat = pending.length > 0;
+
   return (
     <div className="mx-auto max-w-7xl">
       <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
@@ -75,6 +91,8 @@ export default async function BuilderPage({
           <p className="mt-1 text-sm text-ink-500">
             {resumable
               ? "Your unlaunched draft is loaded — carry on where you stopped, or discard it to start fresh."
+              : pendingChat
+              ? "Your conversation is right where you left it — carry on, or start over."
               : skipping
               ? "Picking up where you left off — I'll only ask what I don't already know."
               : "Answer a few questions and EcomAI builds your whole store."}
@@ -90,7 +108,8 @@ export default async function BuilderPage({
         canCreateStore={e.canCreateStore}
         draft={resumable}
         context={context}
-        initialChatMessages={thread?.messages}
+        initialChatMessages={thread?.messages ?? (pendingChat ? pending : undefined)}
+        pendingChat={pendingChat}
         initialPages={pages}
         initialPosts={posts}
       />

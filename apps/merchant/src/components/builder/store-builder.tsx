@@ -22,6 +22,7 @@ import {
   ensureDraftStore,
   saveDraft,
   discardDraft,
+  clearPendingBuilderChat,
   saveBuilderChatHistory,
   listBuilderPreviewPages,
   type PreviewProduct,
@@ -137,6 +138,7 @@ export function StoreBuilder({
   initialChatMessages,
   initialPages,
   initialPosts,
+  pendingChat,
 }: {
   userId: string;
   initialTheme: string;
@@ -157,6 +159,9 @@ export function StoreBuilder({
   /** Published blog posts (existing or resumed) — written from the store's
    *  own Blog screen, not this chat, so an initial load is enough. */
   initialPosts?: PostDetail[];
+  /** `initialChatMessages` came from the pending (pre-draft) thread rather
+   *  than a store's own — offers "Start over" instead of "Discard". */
+  pendingChat?: boolean;
 }) {
   const router = useRouter();
   const idRef = useRef(0);
@@ -379,7 +384,7 @@ export function StoreBuilder({
       await Promise.resolve();
       if (cancelled) return;
       setBusy(true);
-      const res = await converseBuilderTurn([], turnContext);
+      const res = await converseBuilderTurn([], turnContext, draftId);
       if (cancelled || cancelledRef.current) return;
       setBusy(false);
       if ("error" in res) {
@@ -492,7 +497,7 @@ export function StoreBuilder({
       setBusy(true);
       const nextHistory: BuilderTurn[] = [...history, { role: "user", content: text }];
       const res: (ConverseResult & { productSuggestions?: ProductSuggestion[] }) | { error: string; upgrade?: boolean } =
-        await converseBuilderTurn(nextHistory, turnContext);
+        await converseBuilderTurn(nextHistory, turnContext, draftId);
       if (cancelledRef.current) return;
       setBusy(false);
       if ("error" in res) {
@@ -690,6 +695,15 @@ export function StoreBuilder({
     // the discarded draft sitting on screen even though the row is gone.
     // "Discard" means start over, so a hard navigation is the correct tool
     // here, not a shortcut around a bug.
+    window.location.href = "/builder";
+  }
+
+  // The pre-draft counterpart of Discard: forget the saved conversation and
+  // begin again. Same hard reload, for the same reason.
+  async function startOver() {
+    if (busy) return;
+    setDiscarding(true);
+    await clearPendingBuilderChat();
     window.location.href = "/builder";
   }
 
@@ -1254,6 +1268,17 @@ export function StoreBuilder({
                   >
                     <Pencil className="h-3.5 w-3.5" />
                     {editingContent ? "Preview" : "Content"}
+                  </button>
+                )}
+                {pendingChat && !draftId && (
+                  <button
+                    onClick={startOver}
+                    disabled={discarding || busy}
+                    title="Forget this conversation and start a new one"
+                    className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-ink-200 px-3 text-sm font-semibold text-ink-600 transition hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                  >
+                    {discarding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                    <span className="hidden sm:inline">Start over</span>
                   </button>
                 )}
                 {draftId && (

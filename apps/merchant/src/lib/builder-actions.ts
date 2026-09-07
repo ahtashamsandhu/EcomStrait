@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@ecomstrait/auth/server";
 import { createAdminClient } from "@ecomstrait/db/admin";
 import type { StoreType, StoreStatus } from "@ecomstrait/db";
-import { loadChatThread, appendChatTurns } from "@ecomstrait/ai";
+import { loadChatThread, appendChatTurns, clearChatThread, type ChatThreadMessage } from "@ecomstrait/ai";
 import { revalidatePath } from "next/cache";
 import { assertTokenBudget, recordTokenUsage, assertCanCreateStore } from "@/lib/entitlements";
 import { autoSelectProducts, getSelectedProducts, getSelectedIds, productImage, type CatalogProduct } from "@/lib/catalog";
@@ -100,13 +100,63 @@ const PRODUCT_CONTEXT_PATTERN = /\b(product|item|sku|stock|inventory|thing|thing
  * One turn of the builder conversation — the AI decides what to ask next
  * (or that it's ready to build), rather than a fixed question script.
  */
+/**
+ * Where the opening conversation lives before a draft row exists to key it
+ * on. One per merchant: the builder is a single ongoing conversation until a
+ * build produces a store id, at which point `saveBuilderChatHistory` hands
+ * the transcript over to that store's own thread and this one is cleared.
+ */
+function pendingBuilderKey(userId: string): string {
+  return `pending:${userId}`;
+}
+
+type ConverseOutcome =
+  | (ConverseResult & { productSuggestions?: ProductSuggestion[] })
+  | { error: string; upgrade?: boolean };
+
+/**
+ * One turn of the builder conversation, persisted as it happens.
+ *
+ * Every exchange is written to the store's thread when `draftId` is known,
+ * and to the merchant's pending thread before that — so a conversation
+ * abandoned mid-way (or one whose draft save failed) is still there on the
+ * next visit, the same way the Co-Founder chats are. Saving never blocks or
+ * fails the turn itself.
+ */
 export async function converseBuilderTurn(
   history: BuilderTurn[],
   context: BuilderKnownContext,
-): Promise<
-  | (ConverseResult & { productSuggestions?: ProductSuggestion[] })
-  | { error: string; upgrade?: boolean }
-> {
+  draftId?: string | null,
+): Promise<ConverseOutcome> {
+  const res = await converseBuilderTurnInner(history, context);
+  if ("error" in res) return res;
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (user) {
+      const last = history[history.length - 1];
+      const turns: ChatThreadMessage[] = [];
+      if (last?.role === "user") turns.push({ role: "user", content: last.content });
+      turns.push({ role: "assistant", content: res.reply });
+      await appendChatTurns({
+        tenantId: user.id,
+        agent: "merchant_builder",
+        threadKey: draftId ?? pendingBuilderKey(user.id),
+        turns,
+      });
+    }
+  } catch (err) {
+    console.error("[builder] could not persist chat turn:", err);
+  }
+  return res;
+}
+
+async function converseBuilderTurnInner(
+  history: BuilderTurn[],
+  context: BuilderKnownContext,
+): Promise<ConverseOutcome> {
   try {
     const budget = await assertTokenBudget(500);
     if (!budget.ok) return { error: budget.error, upgrade: true };
@@ -388,29 +438,29 @@ export async function refineStore(
   // A draft's chat memory is keyed by its store id — a session that hasn't
   // built anything yet (no draftId) has nothing to key on, same as it has
   // nowhere to save the plan itself yet either.
-  let userId: string | null = null;
+  // Before a draft exists the chat lives in the merchant's pending thread
+  // (see converseBuilderTurn), so nothing said here is lost either way.
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  const userId = user?.id ?? null;
+  const threadKey = userId ? (draftId ?? pendingBuilderKey(userId)) : null;
   let conversationSummary: string | null = null;
-  if (draftId) {
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    userId = user?.id ?? null;
-    if (userId) {
-      const thread = await loadChatThread({ tenantId: userId, agent: "merchant_builder", threadKey: draftId });
-      conversationSummary = thread.summary;
-    }
+  if (userId && threadKey) {
+    const thread = await loadChatThread({ tenantId: userId, agent: "merchant_builder", threadKey });
+    conversationSummary = thread.summary;
   }
 
   const existingPages = draftId ? await listStorePages(draftId) : [];
   const res = await applyMerchantRequest(plan, instruction, existingPages, conversationSummary);
   await recordTokenUsage(res.tokensUsed);
 
-  if (draftId && userId) {
+  if (userId && threadKey) {
     await appendChatTurns({
       tenantId: userId,
       agent: "merchant_builder",
-      threadKey: draftId,
+      threadKey,
       turns: [
         { role: "user", content: instruction.trim() },
         { role: "assistant", content: res.reply },
@@ -882,6 +932,18 @@ export async function saveBuilderChatHistory(
   } = await supabase.auth.getUser();
   if (!user) return;
   await appendChatTurns({ tenantId: user.id, agent: "merchant_builder", threadKey: storeId, turns });
+  // The conversation now lives with the store; the pending copy has done its job.
+  await clearChatThread({ tenantId: user.id, agent: "merchant_builder", threadKey: pendingBuilderKey(user.id) });
+}
+
+/** Forget the opening conversation that hasn't produced a draft yet ("Start over"). */
+export async function clearPendingBuilderChat(): Promise<void> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return;
+  await clearChatThread({ tenantId: user.id, agent: "merchant_builder", threadKey: pendingBuilderKey(user.id) });
 }
 
 /**
@@ -1053,6 +1115,11 @@ export async function discardDraft(storeId: string): Promise<{ ok?: true; error?
     .eq("user_id", user.id)
     .is("launched_at", null);
   if (error) return { error: error.message };
+  // The chat about a draft that no longer exists shouldn't greet the next one.
+  await Promise.all([
+    clearChatThread({ tenantId: user.id, agent: "merchant_builder", threadKey: storeId }),
+    clearChatThread({ tenantId: user.id, agent: "merchant_builder", threadKey: pendingBuilderKey(user.id) }),
+  ]);
 
   revalidatePath("/stores");
   return { ok: true };

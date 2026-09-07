@@ -220,3 +220,28 @@ async function refreshSummary(
     return previous;
   }
 }
+
+/**
+ * Forget a thread entirely. Used when the thing it was about no longer
+ * exists (a discarded draft) or the user explicitly starts over. Never
+ * throws, for the same reason as the other two.
+ */
+export async function clearChatThread(params: {
+  tenantId: string;
+  agent: ChatAgent;
+  threadKey: string;
+}): Promise<void> {
+  const admin = createAdminClient();
+  if (!admin) return;
+  try {
+    const { error } = await admin
+      .from("ai_chat_threads")
+      .delete()
+      .eq("tenant_id", params.tenantId)
+      .eq("agent", params.agent)
+      .eq("thread_key", params.threadKey);
+    if (error) console.error("[ai] chat thread clear failed:", error.message);
+  } catch (err) {
+    console.error("[ai] chat thread clear threw:", err);
+  }
+}
