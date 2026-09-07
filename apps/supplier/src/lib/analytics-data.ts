@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, RequestStatus, Supplier } from "@ecomstrait/db/types";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { computeQualityScore, PROFILE_FIELDS, type QualityResult } from "@/lib/quality";
 
 export type SupplierAnalytics = {
@@ -207,4 +208,120 @@ export function summarizeCatalogForAdvisor(a: SupplierAnalytics): string {
       .join(", ")}.`,
   ];
   return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Platform-wide demand signal (2026-09-07 capability audit, §10.2)
+// ---------------------------------------------------------------------------
+
+export type PlatformDemand = {
+  /** Top categories by units sold across ALL suppliers in the last 90 days
+   *  (order_items → orders with status <> 'cancelled' → products.category). */
+  topCategories: { category: string; units: number }[];
+  /** Open (new/proposed) buyer product requests platform-wide. */
+  openRequests: number;
+  /** Most-requested product names on those open requests. */
+  topRequested: { name: string; count: number }[];
+};
+
+const DEMAND_DAYS = 90;
+const DEMAND_SCAN_LIMIT = 5000;
+const IN_CHUNK = 200;
+
+function chunkIds<T>(items: T[], size = IN_CHUNK): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+/**
+ * What merchants are actually buying and asking for across the whole
+ * platform — the market context the merchant Co-Founder already gets
+ * (`cofounder-snapshot.ts` platformTopSellers) and the supplier one never
+ * had. Uses the service-role client because it deliberately crosses tenant
+ * boundaries; only aggregates ever leave this function (category names and
+ * counts), never another supplier's rows. `product_requests` has no
+ * category column, so the request side is a count plus the most-requested
+ * product names from `request_items` instead.
+ *
+ * Returns null when the admin client isn't configured, so the caller can
+ * simply omit the line rather than show an empty one.
+ */
+export async function getPlatformDemand(): Promise<PlatformDemand | null> {
+  const admin = createAdminClient();
+  if (!admin) return null;
+
+  const since = new Date(Date.now() - DEMAND_DAYS * 86_400_000).toISOString();
+  const [{ data: recentOrders }, { data: openReqs }] = await Promise.all([
+    admin
+      .from("orders")
+      .select("id")
+      .neq("status", "cancelled")
+      .gte("created_at", since)
+      .order("created_at", { ascending: false })
+      .limit(DEMAND_SCAN_LIMIT),
+    admin.from("product_requests").select("id").in("status", ["new", "proposed"]).limit(DEMAND_SCAN_LIMIT),
+  ]);
+
+  // ---- Units by category, last 90 days ----
+  const unitsByProduct = new Map<string, number>();
+  for (const ids of chunkIds((recentOrders ?? []).map((o) => o.id))) {
+    const { data: items } = await admin
+      .from("order_items")
+      .select("product_id, quantity")
+      .in("order_id", ids)
+      .not("product_id", "is", null);
+    for (const it of items ?? []) {
+      if (!it.product_id) continue;
+      unitsByProduct.set(it.product_id, (unitsByProduct.get(it.product_id) ?? 0) + it.quantity);
+    }
+  }
+  const unitsByCategory = new Map<string, number>();
+  for (const ids of chunkIds([...unitsByProduct.keys()])) {
+    const { data: prods } = await admin.from("products").select("id, category").in("id", ids);
+    for (const p of prods ?? []) {
+      const cat = p.category?.trim() || "Uncategorised";
+      unitsByCategory.set(cat, (unitsByCategory.get(cat) ?? 0) + (unitsByProduct.get(p.id) ?? 0));
+    }
+  }
+  const topCategories = [...unitsByCategory.entries()]
+    .map(([category, units]) => ({ category, units }))
+    .sort((a, b) => b.units - a.units)
+    .slice(0, 5);
+
+  // ---- Open requests: count + most-requested product names ----
+  const requestedByName = new Map<string, number>();
+  for (const ids of chunkIds((openReqs ?? []).map((r) => r.id))) {
+    const { data: items } = await admin.from("request_items").select("product_name").in("request_id", ids);
+    for (const it of items ?? []) {
+      const name = it.product_name?.trim();
+      if (!name) continue;
+      requestedByName.set(name, (requestedByName.get(name) ?? 0) + 1);
+    }
+  }
+  const topRequested = [...requestedByName.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 3);
+
+  return { topCategories, openRequests: (openReqs ?? []).length, topRequested };
+}
+
+/** One compact line for the Co-Founder chat — labelled as market context so
+ *  the model never mistakes platform-wide numbers for this supplier's own. */
+export function summarizeDemandForAdvisor(d: PlatformDemand): string {
+  const cats = d.topCategories.length
+    ? `top categories by units sold in the last ${DEMAND_DAYS} days: ${d.topCategories
+        .map((c) => `${c.category} (${c.units})`)
+        .join(", ")}`
+    : `no platform sales in the last ${DEMAND_DAYS} days`;
+  const reqs =
+    d.openRequests > 0
+      ? `${d.openRequests} open buyer request(s) platform-wide${
+          d.topRequested.length
+            ? `, most-requested: ${d.topRequested.map((r) => `${r.name} (${r.count})`).join(", ")}`
+            : ""
+        }`
+      : `no open buyer requests platform-wide right now`;
+  return `Platform demand (market context, all suppliers): ${cats}; ${reqs}.`;
 }

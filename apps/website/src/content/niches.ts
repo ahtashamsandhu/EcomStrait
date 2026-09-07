@@ -194,20 +194,115 @@ export const genericNiche: Niche = {
   countries: ["United States", "United Kingdom", "Canada"],
 };
 
-/** Best-effort niche match from a free-text idea (keyword overlap). */
-export function matchNiche(idea: string): Niche {
-  const q = idea.toLowerCase();
+export type NicheMatchStrength = "strong" | "weak" | "none";
+
+/** Filler words that don't count toward an idea's "meaningful" word total. */
+const IDEA_STOP_WORDS = new Set([
+  "i", "im", "id", "we", "my", "our", "a", "an", "the", "to", "of", "for", "and", "or", "in", "on", "with",
+  "want", "wanna", "like", "would", "sell", "selling", "sale", "start", "starting", "launch", "build", "open",
+  "online", "store", "shop", "brand", "business", "ecommerce", "website", "site", "some", "that", "this",
+  "products", "product", "items", "stuff", "things",
+]);
+
+/** Lowercase, strip punctuation, collapse whitespace — applied to both the idea and each keyword. */
+function normalizeText(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+}
+
+/**
+ * Whole-word match, tolerating a plural suffix ("shoe" matches "shoes",
+ * "watch" matches "watches") so keyword lists don't need every inflection.
+ */
+function wholeWordHit(idea: string, kw: string): boolean {
+  const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^| )${escaped}(?:e?s)?(?: |$)`).test(idea);
+}
+
+/**
+ * Whole-word keyword hits are worth their full length; bare substring hits
+ * ("fashion" inside "fashionable", "cream" inside "ice cream") are worth half
+ * and only for keywords of 4+ chars, so "pet" never fires inside "carpet".
+ * Substring-only matches can never be "strong" — that's the whole point of
+ * this helper.
+ */
+const STRONG_MIN_COVERAGE = 0.25;
+const STRONG_MIN_WORD_SCORE_AT_MIN_COVERAGE = 5;
+const STRONG_HALF_COVERAGE = 0.5;
+const STRONG_MIN_WORD_SCORE = 8;
+
+/**
+ * Niche match plus how much to trust it.
+ *
+ * Niches are ranked by whole-word score first, then total score — so a real
+ * word hit ("dog" in "fashionable dog collars" -> Pets) always beats a
+ * substring-only hit ("fashion" inside "fashionable" -> Fashion), which is
+ * exactly the mis-match the old any-partial-hit-wins scoring produced.
+ *
+ *  - "strong": at least one whole-word keyword hit AND one of:
+ *      (a) matched keywords cover >= 50% of the idea's meaningful words
+ *          ("dog collars", "sneakers", "premium skincare");
+ *      (b) they cover >= 25% AND the whole-word hits total >= 5 chars —
+ *          a lone 3-4 letter word ("dog", "home", "tech") on 1-of-3 words
+ *          is not enough on its own;
+ *      (c) the whole-word hits total >= 8 chars — a distinctive niche word
+ *          like "streetwear" or "skincare" is a strong signal even inside
+ *          a long sentence.
+ *  - "weak": some keyword overlap that doesn't meet the bar above — the
+ *    reference niche is a loose fit and its numbers should be read as a
+ *    ceiling, not a forecast.
+ *  - "none": no overlap at all -> `genericNiche`.
+ *
+ * The thresholds are judgement calls tuned by hand against the keyword lists
+ * above; they are deliberately conservative because "weak" only softens the
+ * simulator's wording, while a false "strong" produces confident numbers for
+ * the wrong business.
+ */
+export function matchNicheWithStrength(idea: string): { niche: Niche; strength: NicheMatchStrength } {
+  const q = normalizeText(idea);
+  const meaningfulWords = q.split(" ").filter((w) => w && !IDEA_STOP_WORDS.has(w));
+  const wordTotal = Math.max(1, meaningfulWords.length);
+
   let best: Niche | null = null;
   let bestScore = 0;
+  let bestWordScore = 0;
+  let bestCoveredWords = 0;
   for (const n of niches) {
     let score = 0;
-    for (const kw of n.keywords) if (q.includes(kw)) score += kw.length;
-    if (score > bestScore) {
+    let wordScore = 0;
+    let coveredWords = 0;
+    for (const raw of n.keywords) {
+      const kw = normalizeText(raw);
+      if (!kw) continue;
+      if (wholeWordHit(q, kw)) {
+        score += kw.length;
+        wordScore += kw.length;
+        coveredWords += kw.split(" ").length;
+      } else if (kw.length >= 4 && q.includes(kw)) {
+        score += kw.length / 2;
+      }
+    }
+    const better = wordScore > bestWordScore || (wordScore === bestWordScore && score > bestScore);
+    if (score > 0 && better) {
       bestScore = score;
+      bestWordScore = wordScore;
+      bestCoveredWords = coveredWords;
       best = n;
     }
   }
-  return best ?? genericNiche;
+  if (!best || bestScore <= 0) return { niche: genericNiche, strength: "none" };
+
+  const coverage = bestCoveredWords / wordTotal;
+  const strong =
+    bestWordScore > 0 &&
+    (coverage >= STRONG_HALF_COVERAGE ||
+      (coverage >= STRONG_MIN_COVERAGE && bestWordScore >= STRONG_MIN_WORD_SCORE_AT_MIN_COVERAGE) ||
+      bestWordScore >= STRONG_MIN_WORD_SCORE);
+  return { niche: best, strength: strong ? "strong" : "weak" };
+}
+
+/** Best-effort niche match from a free-text idea (keyword overlap). */
+export function matchNiche(idea: string): Niche {
+  return matchNicheWithStrength(idea).niche;
 }
 
 /** Niches with at least one live theme (the beta-available set). */

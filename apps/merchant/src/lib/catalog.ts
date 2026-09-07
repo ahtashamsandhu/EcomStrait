@@ -182,36 +182,147 @@ export async function getCatalogFacets(): Promise<CatalogFacets> {
   return { suppliers, categories };
 }
 
-/** Auto-pick published products that fit a niche (falls back to any published). */
-export async function autoSelectProducts(niche: string, limit = 8): Promise<CatalogProduct[]> {
+/**
+ * Words in a niche phrase that say nothing about what's being sold — "an
+ * online store for handmade leather bags" should match on `handmade`,
+ * `leather`, `bag`, not on `online`/`store`/`for`.
+ */
+const NICHE_STOPWORDS = new Set([
+  "a", "an", "the", "and", "or", "of", "to", "in", "on", "for", "with", "by", "from", "at", "into",
+  "my", "our", "your", "their", "own", "some", "any", "all", "new", "best", "top", "good", "great",
+  "store", "stores", "shop", "shops", "online", "ecommerce", "e-commerce", "website", "site", "brand", "business",
+  "sell", "sells", "selling", "sale", "buy", "want", "like", "think", "maybe", "kind", "sort", "type",
+  "product", "products", "item", "items", "goods", "stuff", "things", "thing", "collection", "range",
+  "niche", "based", "focused", "focus", "premium", "quality", "cheap", "affordable", "luxury",
+]);
+
+/**
+ * The meaningful words of a freeform niche phrase, ready for `ilike`:
+ * lowercased, punctuation stripped, stopwords dropped, and a trailing plural
+ * "s" removed so "bags"/"shoes" still hit "bag"/"shoe" (and vice versa —
+ * `%bag%` matches both). Short tokens (< 3 chars after stemming) are
+ * dropped: they match everything and nothing.
+ */
+export function nicheKeywords(niche: string): string[] {
+  const out: string[] = [];
+  for (const raw of niche.toLowerCase().split(/\s+/)) {
+    let w = raw.replace(/'s$/u, "").replace(/[^\p{L}\p{N}-]/gu, "").replace(/^-+|-+$/g, "");
+    if (!w || NICHE_STOPWORDS.has(w)) continue;
+    if (w.length > 3 && w.endsWith("s") && !w.endsWith("ss")) w = w.slice(0, -1);
+    if (w.length < 3 || NICHE_STOPWORDS.has(w)) continue;
+    if (!out.includes(w)) out.push(w);
+  }
+  return out.slice(0, 8);
+}
+
+/** `ilike` pattern for one keyword — wildcards already stripped by `nicheKeywords`. */
+function likeWord(w: string): string {
+  return `%${likeSafe(w)}%`;
+}
+
+/**
+ * How to narrow the published catalog to "products for this phrase" — the
+ * three tiers `suggestProductsForStore` walks in order, from strictest to
+ * loosest, so it can tell the caller which one actually hit.
+ */
+export type ProductMatch =
+  /** The whole phrase is a category name (case-insensitive) — "Shoes". */
+  | { kind: "category"; value: string }
+  /** Any keyword appears in the category — "women's garments" → Fashion? no; "leather bags" → "Bags" yes. */
+  | { kind: "category-words"; words: string[] }
+  /** Any keyword appears in the product title — "sneakers" → "Retro Sneakers". */
+  | { kind: "title-words"; words: string[] };
+
+function publishedProducts(admin: NonNullable<ReturnType<typeof createAdminClient>>) {
+  return admin.from("products").select(SELECT).eq("status", "published");
+}
+type ProductsQuery = ReturnType<typeof publishedProducts>;
+
+function applyMatch(q: ProductsQuery, match: ProductMatch): ProductsQuery {
+  switch (match.kind) {
+    case "category":
+      return q.ilike("category", likeSafe(match.value));
+    case "category-words":
+      return q.or(match.words.map((w) => `category.ilike.${likeWord(w)}`).join(","));
+    case "title-words":
+      return q.or(match.words.map((w) => `title.ilike.${likeWord(w)}`).join(","));
+  }
+}
+
+/**
+ * Published products narrowed by one `ProductMatch` tier, newest first —
+ * the catalog-side counterpart of `getPlatformTopSellers({ match })` for a
+ * niche with no sales history yet.
+ */
+export async function findPublishedProducts(match: ProductMatch, limit = 60): Promise<CatalogProduct[]> {
   const admin = createAdminClient();
   if (!admin) return [];
+  if (match.kind !== "category" && !match.words.length) return [];
+  const { data } = await applyMatch(publishedProducts(admin), match)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  return withSupplierNames(admin, (data ?? []) as RawProduct[]);
+}
 
-  const term = niche
-    .toLowerCase()
-    .split(/\s+/)
-    .find((w) => w.length > 2);
+export type AutoSelectResult = {
+  products: CatalogProduct[];
+  /**
+   * False when nothing in the catalog matched any keyword of the niche and
+   * `products` is just the newest published stock of any kind — a caller
+   * must say so rather than present those as "products for your niche".
+   */
+  matchedNiche: boolean;
+};
 
+/**
+ * Auto-pick published products that fit a niche. Every meaningful word of
+ * the phrase is tried (OR-ilike across title and category), and rows that
+ * hit more of those words rank first — "handmade leather bags" prefers a
+ * "Handmade Leather Tote" over anything merely tagged "Handmade". Falls
+ * back to the newest published products when nothing matches at all, and
+ * says so via `matchedNiche`.
+ */
+export async function autoSelectProductsDetailed(niche: string, limit = 8): Promise<AutoSelectResult> {
+  const admin = createAdminClient();
+  if (!admin) return { products: [], matchedNiche: false };
+
+  const words = nicheKeywords(niche);
   let rows: RawProduct[] = [];
-  if (term) {
+  if (words.length) {
+    const filter = words.flatMap((w) => [`title.ilike.${likeWord(w)}`, `category.ilike.${likeWord(w)}`]).join(",");
     const { data } = await admin
       .from("products")
       .select(SELECT)
       .eq("status", "published")
-      .or(`title.ilike.%${term}%,category.ilike.%${term}%`)
-      .limit(limit);
-    rows = data ?? [];
-  }
-  if (rows.length === 0) {
-    const { data } = await admin
-      .from("products")
-      .select(SELECT)
-      .eq("status", "published")
+      .or(filter)
       .order("created_at", { ascending: false })
-      .limit(limit);
-    rows = data ?? [];
+      .limit(Math.max(limit * 6, 40));
+    const hits = (r: RawProduct) => {
+      const hay = `${r.title} ${r.category ?? ""}`.toLowerCase();
+      return words.filter((w) => hay.includes(w)).length;
+    };
+    const inStock = (r: RawProduct) => ((r.stock ?? 0) - (r.reserved ?? 0) > 0 ? 1 : 0);
+    rows = ((data ?? []) as RawProduct[])
+      .map((r, i) => ({ r, hits: hits(r), stock: inStock(r), i }))
+      .sort((a, b) => b.hits - a.hits || b.stock - a.stock || a.i - b.i)
+      .map((x) => x.r);
   }
-  return withSupplierNames(admin, rows.slice(0, limit));
+  if (rows.length) {
+    return { products: await withSupplierNames(admin, rows.slice(0, limit)), matchedNiche: true };
+  }
+
+  const { data } = await admin
+    .from("products")
+    .select(SELECT)
+    .eq("status", "published")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  return { products: await withSupplierNames(admin, (data ?? []) as RawProduct[]), matchedNiche: false };
+}
+
+/** `autoSelectProductsDetailed` for callers that don't need to know whether the niche matched. */
+export async function autoSelectProducts(niche: string, limit = 8): Promise<CatalogProduct[]> {
+  return (await autoSelectProductsDetailed(niche, limit)).products;
 }
 
 /**
@@ -258,42 +369,68 @@ export async function getSelectedProducts(): Promise<CatalogProduct[]> {
 
 export type PlatformTopSeller = CatalogProduct & { unitsSold: number };
 
+/** How far back "sold across the platform recently" looks. */
+export const TOP_SELLER_WINDOW_DAYS = 90;
+
 /**
  * Best-selling published products across the WHOLE platform — every
- * merchant, every supplier — ranked by real units sold. Never one
- * merchant's own numbers, only the aggregate: this is what makes it useful
- * to a store with no sales history of its own (a pre-launch build has
- * none), and it's the signal behind both the Product Suggestion agent and
- * the "products similar stores sell well" line in the co-founder snapshot.
+ * merchant, every supplier — ranked by real units sold over the last
+ * `TOP_SELLER_WINDOW_DAYS` days. Never one merchant's own numbers, only the
+ * aggregate: this is what makes it useful to a store with no sales history
+ * of its own (a pre-launch build has none), and it's the signal behind both
+ * the Product Suggestion agent and the "products similar stores sell well"
+ * line in the co-founder snapshot.
  *
- * Two plain queries rather than one join-with-a-filter-on-the-related-table
- * — same shape as the supplier orders list's "pull sort keys, then hydrate"
+ * Plain queries rather than one join-with-a-filter-on-the-related-table —
+ * same shape as the supplier orders list's "pull sort keys, then hydrate"
  * pattern (apps/supplier's `orders/page.tsx`), avoiding Supabase's fiddlier
- * embedded-resource filter syntax for something this occasional.
+ * embedded-resource filter syntax for something this occasional. The date
+ * window lives on `orders` (order_items has no timestamp of its own), so
+ * qualifying order ids are pulled first and the items fetched for those.
  */
 export async function getPlatformTopSellers(
-  opts: { category?: string; limit?: number } = {},
+  opts: {
+    /** Exact (case-insensitive) category — shorthand for `match: { kind: "category" }`. */
+    category?: string;
+    /** A looser tier than `category`; ignored when `category` is set. */
+    match?: ProductMatch;
+    limit?: number;
+    windowDays?: number;
+  } = {},
 ): Promise<PlatformTopSeller[]> {
   const admin = createAdminClient();
   if (!admin) return [];
   const limit = opts.limit ?? 8;
-
-  const { data: cancelled } = await admin.from("orders").select("id").eq("status", "cancelled");
-  const cancelledIds = new Set((cancelled ?? []).map((o) => o.id));
+  const windowDays = opts.windowDays ?? TOP_SELLER_WINDOW_DAYS;
+  const since = new Date(Date.now() - windowDays * 86_400_000).toISOString();
 
   // Bounded scan, not a full aggregate query — fine at today's order volume;
   // revisit with a real SQL aggregate (or a materialized view) if this ever
   // shows up as slow.
-  const { data: items } = await admin
-    .from("order_items")
-    .select("order_id, product_id, quantity")
-    .not("product_id", "is", null)
-    .limit(20000);
+  const { data: recent } = await admin
+    .from("orders")
+    .select("id")
+    .gte("created_at", since)
+    .neq("status", "cancelled")
+    .order("created_at", { ascending: false })
+    .limit(5000);
+  const orderIds = (recent ?? []).map((o) => o.id);
+  if (!orderIds.length) return [];
 
   const unitsByProduct = new Map<string, number>();
-  for (const it of items ?? []) {
-    if (!it.product_id || cancelledIds.has(it.order_id)) continue;
-    unitsByProduct.set(it.product_id, (unitsByProduct.get(it.product_id) ?? 0) + it.quantity);
+  // `.in()` goes into the request URL, so keep each batch a sane size.
+  const BATCH = 300;
+  for (let i = 0; i < orderIds.length; i += BATCH) {
+    const { data: items } = await admin
+      .from("order_items")
+      .select("order_id, product_id, quantity")
+      .in("order_id", orderIds.slice(i, i + BATCH))
+      .not("product_id", "is", null)
+      .limit(20000);
+    for (const it of items ?? []) {
+      if (!it.product_id) continue;
+      unitsByProduct.set(it.product_id, (unitsByProduct.get(it.product_id) ?? 0) + it.quantity);
+    }
   }
   if (!unitsByProduct.size) return [];
 
@@ -303,11 +440,12 @@ export async function getPlatformTopSellers(
     .slice(0, limit * 4)
     .map(([id]) => id);
 
-  let productsQuery = admin.from("products").select(SELECT).eq("status", "published").in("id", topIds);
-  // ilike, not eq: this function's only caller is product-suggestions.ts,
-  // matching a freeform niche phrase from an AI conversation against the
-  // DB's own category string — never guaranteed to be the same case.
-  if (opts.category) productsQuery = productsQuery.ilike("category", opts.category);
+  let productsQuery = publishedProducts(admin).in("id", topIds);
+  // ilike, not eq: the callers match a freeform niche phrase from an AI
+  // conversation against the DB's own category string — never guaranteed
+  // to be the same case.
+  const match: ProductMatch | undefined = opts.category ? { kind: "category", value: opts.category } : opts.match;
+  if (match) productsQuery = applyMatch(productsQuery, match);
   const { data: rows } = await productsQuery;
 
   const withNames = await withSupplierNames(admin, (rows ?? []) as RawProduct[]);

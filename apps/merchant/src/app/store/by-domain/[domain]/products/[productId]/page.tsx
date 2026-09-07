@@ -17,9 +17,16 @@ export async function generateMetadata({
     : [null, null];
   if (!store || !product) return { title: "Product" };
   const origin = await requestOrigin();
+  // Supplier-authored SEO fields first (products.seo_title/seo_description —
+  // dead fields until 2026-09-07); storefrontMetadata()'s clamp stays the
+  // length guarantee either way.
   return storefrontMetadata({
-    title: `${product.title} · ${store.name}`,
-    description: product.description || store.plan.seoDescription || `${product.title} at ${store.name}.`,
+    title: product.seoTitle ? `${product.seoTitle} · ${store.name}` : `${product.title} · ${store.name}`,
+    description:
+      product.seoDescription ||
+      product.description ||
+      store.plan.seoDescription ||
+      `${product.title} at ${store.name}.`,
     canonical: `${origin}/products/${productId}`,
     storeName: store.name,
     image: product.image ?? store.logoUrl,

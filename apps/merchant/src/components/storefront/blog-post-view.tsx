@@ -7,6 +7,56 @@ import type { StorefrontNavLink } from "@/lib/storefront-api";
 import { storeTokens, tokenStyle } from "@/lib/theme-tokens";
 import { StorefrontChrome } from "@/components/storefront/storefront-chrome";
 
+type BodyBlock =
+  | { kind: "h2"; text: string }
+  | { kind: "ul"; items: string[] }
+  | { kind: "p"; text: string };
+
+/**
+ * The post body's minimal-markup convention: paragraphs separated by a blank
+ * line, plus — since the 2026-09-07 blog-writer change — a line starting with
+ * "## " as a subheading and consecutive "- " lines as one bullet list. Nothing
+ * else is interpreted, so there's still no HTML to sanitize; a body written
+ * before the change (plain paragraphs) renders exactly as it did.
+ */
+function parseBody(body: string): BodyBlock[] {
+  const blocks: BodyBlock[] = [];
+  let para: string[] = [];
+  let list: string[] = [];
+  const flushPara = () => {
+    if (para.length) blocks.push({ kind: "p", text: para.join(" ") });
+    para = [];
+  };
+  const flushList = () => {
+    if (list.length) blocks.push({ kind: "ul", items: list });
+    list = [];
+  };
+  for (const raw of body.split("\n")) {
+    const line = raw.trim();
+    if (!line) {
+      flushPara();
+      flushList();
+      continue;
+    }
+    if (line.startsWith("## ")) {
+      flushPara();
+      flushList();
+      blocks.push({ kind: "h2", text: line.slice(3).trim() });
+      continue;
+    }
+    if (line.startsWith("- ")) {
+      flushPara();
+      list.push(line.slice(2).trim());
+      continue;
+    }
+    flushList();
+    para.push(line);
+  }
+  flushPara();
+  flushList();
+  return blocks;
+}
+
 export function BlogPostView({
   store,
   navLinks,
@@ -23,12 +73,7 @@ export function BlogPostView({
 }) {
   const t = storeTokens(store.theme, store.plan.brandColors);
   const surface = "color-mix(in srgb, var(--ink) 4%, var(--bg))";
-  // Same minimal-markup convention as the rest of a plan's text fields —
-  // paragraphs separated by a blank line, no rich-text/HTML to sanitize.
-  const paragraphs = post.body
-    .split(/\n{2,}/)
-    .map((p) => p.trim())
-    .filter(Boolean);
+  const blocks = parseBody(post.body);
 
   return (
     <div
@@ -61,9 +106,25 @@ export function BlogPostView({
           )}
 
           <div className="mt-8 flex flex-col gap-5 text-base leading-relaxed opacity-85">
-            {paragraphs.map((p, i) => (
-              <p key={i}>{p}</p>
-            ))}
+            {blocks.map((b, i) =>
+              b.kind === "h2" ? (
+                <h2
+                  key={i}
+                  className="mt-3 text-xl font-semibold"
+                  style={{ fontFamily: "var(--font-heading)", letterSpacing: "-0.01em" }}
+                >
+                  {b.text}
+                </h2>
+              ) : b.kind === "ul" ? (
+                <ul key={i} className="flex list-disc flex-col gap-2 pl-6">
+                  {b.items.map((item, j) => (
+                    <li key={j}>{item}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p key={i}>{b.text}</p>
+              ),
+            )}
           </div>
         </article>
       </StorefrontChrome>

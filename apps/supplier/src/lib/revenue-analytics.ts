@@ -17,10 +17,36 @@ export type SupplierRevenueAnalytics = {
   heldCount: number;
   walletBalance: number;
   topProducts: { name: string; units: number; revenue: number }[];
+  /** Same realized/`deducted` basis as `totalRevenue`, windowed: the last 30
+   *  days vs the 30 before that — the trend the all-time totals above can't
+   *  show (2026-09-07 capability audit, T7/§10.1). Window edges are
+   *  `created_at`-based, UTC. */
+  recent: {
+    last30: { revenue: number; orders: number };
+    prior30: { revenue: number; orders: number };
+  };
+  /** Order ageing for the realized `processing` queue — how many have sat
+   *  unshipped past 3 / 7 days, and the oldest one, so the Co-Founder chat
+   *  can name the slow order it's told to lead with (§10.5). */
+  ageing: {
+    processingOver3Days: number;
+    processingOver7Days: number;
+    /** `orders.number` of the oldest still-processing order, or null. */
+    oldestProcessingNumber: number | null;
+    oldestProcessingAgeDays: number | null;
+  };
 };
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+const DAY_MS = 86_400_000;
+
+/** Percentage change from `prior` to `current`; null when prior is 0 (no meaningful base). */
+export function pctChange(current: number, prior: number): number | null {
+  if (prior <= 0) return null;
+  return Math.round(((current - prior) / prior) * 100);
 }
 
 /**
@@ -48,7 +74,7 @@ export async function getSupplierRevenueAnalytics(
   const [{ data: orders }, { data: heldOrders }, { data: wallet }] = await Promise.all([
     supabase
       .from("orders")
-      .select("id, status, payment_type, cost_amount, margin_amount, platform_fee_amount, created_at")
+      .select("id, number, status, payment_type, cost_amount, margin_amount, platform_fee_amount, created_at")
       .eq("supplier_id", supplierId)
       .eq("credit_status", "deducted"),
     supabase
@@ -77,6 +103,37 @@ export async function getSupplierRevenueAnalytics(
     if (buckets.has(key)) buckets.set(key, (buckets.get(key) ?? 0) + (o.cost_amount ?? 0));
   }
   const revenueByDay = [...buckets.entries()].map(([date, amount]) => ({ date, amount: round2(amount) }));
+
+  // ---- Last 30 days vs the 30 before (same realized basis as totalRevenue) ----
+  const nowMs = now.getTime();
+  const last30Start = nowMs - 30 * DAY_MS;
+  const prior30Start = nowMs - 60 * DAY_MS;
+  const sumWindow = (fromMs: number, toMs: number) => {
+    const rows = realized.filter((o) => {
+      const t = new Date(o.created_at).getTime();
+      return t >= fromMs && t < toMs;
+    });
+    return { revenue: round2(rows.reduce((s, o) => s + (o.cost_amount ?? 0), 0)), orders: rows.length };
+  };
+  const recent = { last30: sumWindow(last30Start, nowMs + 1), prior30: sumWindow(prior30Start, last30Start) };
+
+  // ---- Order ageing (processing queue) ----
+  let processingOver3Days = 0;
+  let processingOver7Days = 0;
+  let oldest: { number: number; ageDays: number } | null = null;
+  for (const o of realized) {
+    if (o.status !== "processing") continue;
+    const ageDays = (nowMs - new Date(o.created_at).getTime()) / DAY_MS;
+    if (ageDays > 3) processingOver3Days += 1;
+    if (ageDays > 7) processingOver7Days += 1;
+    if (!oldest || ageDays > oldest.ageDays) oldest = { number: o.number, ageDays };
+  }
+  const ageing = {
+    processingOver3Days,
+    processingOver7Days,
+    oldestProcessingNumber: oldest?.number ?? null,
+    oldestProcessingAgeDays: oldest ? Math.floor(oldest.ageDays) : null,
+  };
 
   // ---- Status breakdown ----
   const statusOrder: OrderStatus[] = ["processing", "shipped", "delivered", "cancelled"];
@@ -121,15 +178,34 @@ export async function getSupplierRevenueAnalytics(
     heldCount: held.length,
     walletBalance: wallet?.balance ?? 0,
     topProducts,
+    recent,
+    ageing,
   };
 }
 
 /** Compact plain-text digest for the EcomAI Co-Founder chat's system prompt —
  *  keeps the advisor grounded in real numbers without re-querying anything. */
 export function summarizeForAdvisor(a: SupplierRevenueAnalytics): string {
+  const { last30, prior30 } = a.recent;
+  const change = pctChange(last30.revenue, prior30.revenue);
+  const trendLine =
+    last30.orders === 0 && prior30.orders === 0
+      ? `Last 30 days: no realized orders (none in the 30 days before either).`
+      : `Last 30 days: $${last30.revenue.toFixed(2)} across ${last30.orders} order(s); prior 30 days: $${prior30.revenue.toFixed(2)} across ${prior30.orders} order(s)${
+          change != null ? ` (${change >= 0 ? "+" : ""}${change}% revenue)` : ""
+        }.`;
+  const ag = a.ageing;
+  const ageingLine =
+    ag.oldestProcessingNumber == null
+      ? `Order ageing: nothing sitting in processing.`
+      : ag.processingOver3Days === 0
+        ? `Order ageing: all processing orders are under 3 days old (oldest is #${ag.oldestProcessingNumber}, ${ag.oldestProcessingAgeDays} day(s)).`
+        : `Order ageing: ${ag.processingOver3Days} processing order(s) older than 3 days, ${ag.processingOver7Days} older than 7 days; oldest is order #${ag.oldestProcessingNumber} (${ag.oldestProcessingAgeDays} days unshipped).`;
   const lines = [
     `Revenue (all-time, realized/paid orders only): $${a.totalRevenue.toFixed(2)} across ${a.orderCount} orders.`,
+    trendLine,
     `Order status: ${a.statusCounts.map((s) => `${s.status} ${s.count}`).join(", ")}.`,
+    ageingLine,
     `Payment mix: ${a.paymentMix.map((p) => `${p.type} ${p.count} orders ($${p.amount.toFixed(2)})`).join(", ")}.`,
     a.heldCount > 0
       ? `${a.heldCount} order(s) worth $${a.heldValue.toFixed(2)} are currently on hold, blocked by low wallet credits.`

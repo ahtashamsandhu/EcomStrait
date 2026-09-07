@@ -180,3 +180,83 @@ export async function getMerchantRevenueAnalytics(
     walletBalance,
   };
 }
+
+const WINDOW_DAYS = 30;
+
+/** Gross-basis trend + per-store order stats — see `getMerchantOrderTrend`. */
+export type MerchantOrderTrend = {
+  /** Gross checkout value + checkout count, last 30 days (today back 30 days). */
+  last30: { gross: number; orders: number };
+  /** Same, for the 30 days before that (days 31–60 ago). */
+  prior30: { gross: number; orders: number };
+  /** All-time per-store checkout count and average order value (gross basis). */
+  perStore: { storeId: string; name: string; orders: number; gross: number; avgOrder: number }[];
+};
+
+/**
+ * The time dimension the Co-Founder snapshot was missing (2026-09-07
+ * capability audit, T7): last-30-days vs prior-30-days gross sales and order
+ * count, plus per-store order count / AOV. Same `store_orders` gross basis
+ * as `getMerchantRevenueAnalytics` — one checkout per row, at what the
+ * customer paid — never net; `cancelled` checkouts are excluded per the
+ * shared metric definitions (`@ecomstrait/ai`'s METRIC_DEFINITIONS).
+ *
+ * Deliberately a separate helper rather than more fields on
+ * `MerchantRevenueAnalytics`, so the Sales page's existing numbers are
+ * untouched.
+ */
+export async function getMerchantOrderTrend(
+  supabase: SupabaseClient<Database>,
+  storeIds: string[],
+  storeName: Map<string, string>,
+): Promise<MerchantOrderTrend> {
+  const empty = { gross: 0, orders: 0 };
+  if (!storeIds.length) return { last30: { ...empty }, prior30: { ...empty }, perStore: [] };
+
+  const { data } = await supabase
+    .from("store_orders")
+    .select("store_id, subtotal, created_at, status")
+    .in("store_id", storeIds)
+    .neq("status", "cancelled");
+  const all = data ?? [];
+
+  const now = Date.now();
+  const last30Start = now - WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  const prior30Start = last30Start - WINDOW_DAYS * 24 * 60 * 60 * 1000;
+
+  const last30 = { ...empty };
+  const prior30 = { ...empty };
+  const byStore = new Map<string, { orders: number; gross: number }>();
+  for (const o of all) {
+    const t = new Date(o.created_at).getTime();
+    const amount = o.subtotal ?? 0;
+    if (t >= last30Start) {
+      last30.orders += 1;
+      last30.gross += amount;
+    } else if (t >= prior30Start) {
+      prior30.orders += 1;
+      prior30.gross += amount;
+    }
+    const cur = byStore.get(o.store_id) ?? { orders: 0, gross: 0 };
+    cur.orders += 1;
+    cur.gross += amount;
+    byStore.set(o.store_id, cur);
+  }
+
+  const perStore = storeIds.map((id) => {
+    const v = byStore.get(id) ?? { orders: 0, gross: 0 };
+    return {
+      storeId: id,
+      name: storeName.get(id) ?? "—",
+      orders: v.orders,
+      gross: round2(v.gross),
+      avgOrder: round2(v.orders ? v.gross / v.orders : 0),
+    };
+  });
+
+  return {
+    last30: { gross: round2(last30.gross), orders: last30.orders },
+    prior30: { gross: round2(prior30.gross), orders: prior30.orders },
+    perStore,
+  };
+}

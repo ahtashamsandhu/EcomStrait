@@ -90,6 +90,12 @@ export function ProductForm({
         title: form.title,
         category: form.category || undefined,
         wholesalePrice: form.wholesale_price ? Number(form.wholesale_price) : undefined,
+        // Real product facts — the only thing the model is allowed to state a
+        // material or size from, and the supplier's own draft if they wrote one.
+        material: form.material || undefined,
+        sizes: form.sizes || undefined,
+        fitNote: form.fit_note || undefined,
+        description: form.description || undefined,
       });
       if ("error" in r) {
         if (r.upgrade) setUpgradeMsg(r.error);

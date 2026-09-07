@@ -7,7 +7,15 @@ import type { StoreType, StoreStatus } from "@ecomstrait/db";
 import { loadChatThread, appendChatTurns, clearChatThread, type ChatThreadMessage } from "@ecomstrait/ai";
 import { revalidatePath } from "next/cache";
 import { assertTokenBudget, recordTokenUsage, assertCanCreateStore } from "@/lib/entitlements";
-import { autoSelectProducts, getSelectedProducts, getSelectedIds, productImage, type CatalogProduct } from "@/lib/catalog";
+import {
+  autoSelectProductsDetailed,
+  getProductsByIds,
+  getSelectedProducts,
+  getSelectedIds,
+  nicheKeywords,
+  productImage,
+  type CatalogProduct,
+} from "@/lib/catalog";
 import { suggestProductsForStore, type ProductSuggestion } from "@/lib/product-suggestions";
 import { merchantUrl } from "@/lib/stripe";
 import { resyncShopifyTheme } from "@/lib/shopify-actions";
@@ -181,7 +189,11 @@ async function converseBuilderTurnInner(
         return {
           done: false,
           reply: "Here's what's doing well right now — add a few that fit, or just tell me the kind of thing you want to sell.",
-          niche: suggested.products[0].category ?? null,
+          // Deliberately NOT the top seller's category: the merchant has only
+          // been shown a list, they haven't picked anything. Labelling the
+          // niche from it flowed into `context.inferredNiche` and the "Known
+          // so far" line, and the model then carried on as if it were settled.
+          niche: null,
           audience: null,
           styleKeyword: null,
           storeName: null,
@@ -249,24 +261,22 @@ async function converseBuilderTurnInner(
 }
 
 /**
- * Whether the merchant's already-selected inventory (from Find Suppliers)
+ * Whether the merchant's already-selected inventory (from Find Products)
  * plausibly matches what they just told the conversational builder they
- * want to sell. Same loose word-overlap check `autoSelectProducts` already
- * uses to match a niche string against a `category` column, just checked
- * against the selection instead of the whole catalog: does any real word in
- * the described niche appear in (or contain) any selected product's category?
+ * want to sell. Same keyword set `autoSelectProductsDetailed` matches a
+ * niche string against the catalog with (`nicheKeywords`: stopwords out,
+ * plurals stemmed), just checked against the selection instead of the whole
+ * catalog: does any real word in the described niche appear in (or
+ * contain) any selected product's category?
  *
  * A real bug this guards against: a merchant selects cosmetics inventory in
- * Find Suppliers, lands in the builder, then tells the chat "a shoe store" —
+ * Find Products, lands in the builder, then tells the chat "a shoe store" —
  * without this check `finalizeBuilderConversation` below would still hand
  * the stale cosmetics selection to `generateStorePlan` and launch a "shoe
  * store" stocked entirely with cosmetics.
  */
 function selectionMatchesNiche(products: CatalogProduct[], niche: string): boolean {
-  const nicheWords = niche
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((w) => w.length > 2);
+  const nicheWords = nicheKeywords(niche);
   // Nothing concrete to compare against (e.g. the "a new store" filler) —
   // don't second-guess a real selection over an unspecific niche string.
   if (!nicheWords.length) return true;
@@ -283,7 +293,7 @@ function selectionMatchesNiche(products: CatalogProduct[], niche: string): boole
  * `done: true`). Same job `buildStore` used to do from 4 scripted answers,
  * now fed by whatever the conversation actually collected.
  *
- * `useSelected` means the merchant arrived from Find Suppliers with products
+ * `useSelected` means the merchant arrived from Find Products with products
  * already chosen — build around those instead of auto-picking for the niche,
  * as long as the selection's own category still matches what the merchant
  * described wanting to sell (see `selectionMatchesNiche`).
@@ -309,9 +319,20 @@ export async function finalizeBuilderConversation(
 
     // Fall back to auto-pick if the basket emptied between pages, or if
     // what's in it doesn't match what the merchant just said they want to sell.
-    const picked = chosen.length && !selectionMismatched ? chosen : await autoSelectProducts(answers.niche, 8);
+    const useChosen = chosen.length > 0 && !selectionMismatched;
+    const auto = useChosen ? { products: chosen, matchedNiche: true } : await autoSelectProductsDetailed(answers.niche, 8);
+    const picked = auto.products;
+    // Auto-pick found nothing for the niche and handed back the newest
+    // published stock instead — the store still gets built (the merchant can
+    // swap products), but never with a confident "Got it" over products
+    // that have nothing to do with what they asked for.
+    const nicheMissed = !auto.matchedNiche;
 
-    const { plan, tokensUsed } = await generateStorePlan(answers, picked.map((p) => p.title));
+    const { plan, tokensUsed } = await generateStorePlan(
+      answers,
+      picked.map((p) => p.title),
+      picked.map((p) => ({ title: p.title, category: p.category, price: p.retail_price })),
+    );
     await recordTokenUsage(tokensUsed);
 
     if (answers.storeName) plan.storeName = answers.storeName.trim();
@@ -328,9 +349,11 @@ export async function finalizeBuilderConversation(
       plan,
       products,
       theme: themeForStyle(answers.styleKeyword ?? undefined),
-      note: selectionMismatched
-        ? `Your previously selected inventory didn't match "${answers.niche.trim()}", so I picked matching products instead — swap in your own from Find Suppliers or the product list anytime.`
-        : undefined,
+      note: nicheMissed
+        ? `Nothing in the catalog matched "${answers.niche.trim()}" yet, so I started with recent products — swap them from Find Products anytime.`
+        : selectionMismatched
+          ? `Your previously selected inventory didn't match "${answers.niche.trim()}", so I picked matching products instead — swap in your own from Find Products or the product list anytime.`
+          : undefined,
     };
   } catch (err) {
     console.error("[builder] finalizeBuilderConversation failed:", err);
@@ -375,16 +398,23 @@ async function applyPageAction(
   }
 
   if (action.action === "delete") {
-    const { data, error } = await supabase
+    const { data: doomed, error: findErr } = await supabase
       .from("store_pages")
-      .delete()
+      .select("id, slug, title, body")
       .eq("store_id", storeId)
       .eq("slug", slug)
-      .select("id")
       .maybeSingle();
+    if (findErr) return { note: `I couldn't remove that page: ${findErr.message}` };
+    if (!doomed) return { note: `I couldn't find a "${slug}" page to remove.` };
+
+    // A page delete executes on the first ask with no confirm step, so it
+    // must at least be undoable: the page's own text rides along inside the
+    // snapshot (`removedPages`), and `restoreStoreVersion` puts it back.
+    await snapshotPageChange(supabase, storeId, `Before removing page "${slug}"`, [doomed]);
+
+    const { error } = await supabase.from("store_pages").delete().eq("id", doomed.id);
     if (error) return { note: `I couldn't remove that page: ${error.message}` };
-    if (!data) return { note: `I couldn't find a "${slug}" page to remove.` };
-    return { note: `Removed the "${slug}" page.` };
+    return { note: `Removed the "${slug}" page — it's in Version history if you want it back.` };
   }
 
   const title = (action.title ?? "").trim() || slug.replace(/-/g, " ");
@@ -392,13 +422,15 @@ async function applyPageAction(
 
   const { data: existingRow, error: findErr } = await supabase
     .from("store_pages")
-    .select("id")
+    .select("id, slug, title, body")
     .eq("store_id", storeId)
     .eq("slug", slug)
     .maybeSingle();
   if (findErr) return { note: `I couldn't save that page: ${findErr.message}` };
 
   if (existingRow) {
+    // Overwriting a page loses its old text just as surely as deleting it.
+    await snapshotPageChange(supabase, storeId, `Before updating page "${slug}"`, [existingRow]);
     const { error } = await supabase.from("store_pages").update({ title, body }).eq("id", existingRow.id);
     if (error) return { note: `I couldn't update that page: ${error.message}` };
     return { note: `Updated the "${title}" page.` };
@@ -407,6 +439,26 @@ async function applyPageAction(
   const { error } = await supabase.from("store_pages").insert({ store_id: storeId, title, slug, body });
   if (error) return { note: `I couldn't create that page: ${error.message}` };
   return { note: `Added a "${title}" page — it's live in your navigation now.` };
+}
+
+/** The compact product shape the edit chat is told about — see `applyMerchantRequest`'s `storeContext`. */
+type ContextProduct = { title: string; category: string | null; price: number | null };
+
+/**
+ * What the draft is being built around, for the edit chat's context: the
+ * picks saved on the draft row (`draft_products`, ids only — hydrated from
+ * the catalog), or the merchant's Find Products basket when there's no
+ * draft row yet. Same source `runBuild()` hands `ensureDraftStore`.
+ */
+async function draftProductsForContext(supabase: SupabaseServerClient, draftId?: string | null): Promise<ContextProduct[]> {
+  let products: CatalogProduct[] = [];
+  if (draftId) {
+    const { data: draft } = await supabase.from("stores").select("draft_products").eq("id", draftId).maybeSingle();
+    const ids = (draft?.draft_products ?? []).map((p) => p.id);
+    if (ids.length) products = await getProductsByIds(ids);
+  }
+  if (!products.length) products = await getSelectedProducts();
+  return products.slice(0, 40).map((p) => ({ title: p.title, category: p.category, price: p.retail_price }));
 }
 
 /**
@@ -453,7 +505,13 @@ export async function refineStore(
   }
 
   const existingPages = draftId ? await listStorePages(draftId) : [];
-  const res = await applyMerchantRequest(plan, instruction, existingPages, conversationSummary);
+  const res = await applyMerchantRequest(plan, instruction, existingPages, conversationSummary, {
+    products: await draftProductsForContext(supabase, draftId),
+    // A draft has no blog yet (posts are written from the launched store's
+    // own screen), and nothing in the schema records a merchant's country.
+    existingPosts: [],
+    country: null,
+  });
   await recordTokenUsage(res.tokensUsed);
 
   if (userId && threadKey) {
@@ -546,6 +604,45 @@ async function snapshotStore(
   } catch {
     // History is a convenience, not a correctness requirement.
   }
+}
+
+/**
+ * A `store_pages` row as carried inside a version snapshot's `content`
+ * (under `removedPages`), so a page that chat deleted or overwrote can be
+ * put back by `restoreStoreVersion`. `normalizePlan` builds a fresh plan
+ * from known keys only, so the extra key never leaks into a rendered plan.
+ */
+type RemovedPage = { slug: string; title: string; body: string };
+const REMOVED_PAGES_KEY = "removedPages";
+
+/**
+ * Snapshot the store as it is right now, with the page(s) about to be
+ * removed/overwritten tucked into the snapshot's content — so a page action
+ * shows up in Version history like any plan edit does, and restoring that
+ * version brings the page back. Best-effort like `snapshotStore` itself.
+ */
+async function snapshotPageChange(
+  supabase: SupabaseServerClient,
+  storeId: string,
+  label: string,
+  pages: RemovedPage[],
+): Promise<void> {
+  const { data: store } = await supabase.from("stores").select("content, theme, logo_url").eq("id", storeId).maybeSingle();
+  if (!store) return;
+  const content = {
+    ...((store.content ?? {}) as Record<string, unknown>),
+    [REMOVED_PAGES_KEY]: pages.map((pg) => ({ slug: pg.slug, title: pg.title, body: pg.body })),
+  };
+  await snapshotStore(supabase, storeId, { content, theme: store.theme, logo_url: store.logo_url }, label);
+}
+
+function removedPagesIn(content: unknown): RemovedPage[] {
+  const raw = content && typeof content === "object" ? (content as Record<string, unknown>)[REMOVED_PAGES_KEY] : null;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (pg): pg is RemovedPage =>
+      !!pg && typeof pg === "object" && typeof (pg as RemovedPage).slug === "string" && typeof (pg as RemovedPage).title === "string",
+  ).map((pg) => ({ slug: pg.slug, title: pg.title, body: typeof pg.body === "string" ? pg.body : "" }));
 }
 
 export type StoreVersion = {
@@ -650,10 +747,17 @@ export async function restoreStoreVersion(
     "Before restore",
   );
 
+  // A snapshot taken before a page delete/overwrite carries that page under
+  // `removedPages` (see `snapshotPageChange`) — put it back, and keep the
+  // key out of `stores.content` itself, which only ever holds the plan.
+  const removedPages = removedPagesIn(version.content);
+  const { [REMOVED_PAGES_KEY]: _removed, ...planContent } = (version.content ?? {}) as Record<string, unknown>;
+  void _removed;
+
   const { error: upErr } = await supabase
     .from("stores")
     .update({
-      content: version.content,
+      content: planContent,
       theme: version.theme,
       logo_url: version.logo_url,
     })
@@ -661,17 +765,28 @@ export async function restoreStoreVersion(
     .eq("user_id", user.id);
   if (upErr) return { error: upErr.message };
 
+  let pagesNote = "";
+  if (removedPages.length) {
+    const { error: pageErr } = await supabase.from("store_pages").upsert(
+      removedPages.map((pg) => ({ store_id: storeId, slug: pg.slug, title: pg.title, body: pg.body })),
+      { onConflict: "store_id,slug" },
+    );
+    pagesNote = pageErr
+      ? ` (I couldn't bring back the "${removedPages.map((pg) => pg.slug).join('", "')}" page: ${pageErr.message})`
+      : ` The "${removedPages.map((pg) => pg.slug).join('", "')}" page is back too.`;
+  }
+
   revalidatePath(`/store/${storeId}`);
   revalidatePath("/stores");
 
-  const plan = normalizePlan(version.content);
+  const plan = normalizePlan(planContent);
 
   if (store.type === "shopify_liquid_theme" && store.shopify_store_id) {
     const res = await resyncShopifyTheme(storeId);
-    if (res.error) return { plan, note: `Restored, but the Shopify sync failed: ${res.error}` };
-    return { plan, note: "Restored and pushed to your live Shopify store." };
+    if (res.error) return { plan, note: `Restored, but the Shopify sync failed: ${res.error}${pagesNote}` };
+    return { plan, note: `Restored and pushed to your live Shopify store.${pagesNote}` };
   }
-  return { plan, note: "Restored." };
+  return { plan, note: `Restored.${pagesNote}` };
 }
 
 export type EditResult = {
@@ -712,7 +827,20 @@ export async function editStore(storeId: string, instruction: string): Promise<E
   const current = normalizePlan(store.content);
   const existingPages = await listStorePages(storeId);
   const thread = await loadChatThread({ tenantId: user.id, agent: "merchant_builder", threadKey: storeId });
-  const ai = await applyMerchantRequest(current, instruction, existingPages, thread.summary);
+  // What the store actually sells and has already published, so the model
+  // edits copy about real products and doesn't propose a blog post that
+  // already exists. Drafts count as existing posts too — a duplicate draft
+  // is still a duplicate.
+  const [{ products: listed }, { data: posts }] = await Promise.all([
+    listStoreProducts(storeId, { limit: 40 }),
+    supabase.from("store_posts").select("title, slug").eq("store_id", storeId).order("created_at", { ascending: false }).limit(30),
+  ]);
+  const ai = await applyMerchantRequest(current, instruction, existingPages, thread.summary, {
+    products: listed.map((p) => ({ title: p.title, category: p.category, price: p.price })),
+    existingPosts: (posts ?? []).map((p) => ({ title: p.title, slug: p.slug })),
+    // Nothing in the schema records a merchant's or store's country yet.
+    country: null,
+  });
   const plan = ai.plan;
   await recordTokenUsage(ai.tokensUsed);
   await appendChatTurns({

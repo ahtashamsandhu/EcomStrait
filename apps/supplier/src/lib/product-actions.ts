@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 import { redirect } from "next/navigation";
 import type { ProductStatus } from "@ecomstrait/db/types";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { requireApprovedSupplier } from "@/lib/supplier-context";
 import { enrichProduct, type EnrichInput, type Enrichment } from "@/lib/ai";
 import { chunk, cleanIds, type BulkResult } from "@/lib/bulk";
@@ -327,19 +328,65 @@ export async function enrichProductAction(
   if ("error" in ctx) return { error: ctx.error };
   const title = String(input?.title ?? "").trim();
   if (!title) return { error: "Enter a product title first." };
+  const text = (v: unknown, max: number) => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : undefined);
   const safeInput: EnrichInput = {
     title: title.slice(0, 300),
-    category: input.category ? String(input.category).slice(0, 120) : undefined,
+    category: text(input.category, 120),
     wholesalePrice:
       typeof input.wholesalePrice === "number" && Number.isFinite(input.wholesalePrice) && input.wholesalePrice >= 0
         ? input.wholesalePrice
         : undefined,
+    // Same ceilings as the product columns they come from (LIMITS above),
+    // except the draft description, which is capped well below its column
+    // limit — it's prompt input, not something to store.
+    material: text(input.material, LIMITS.material),
+    sizes: text(input.sizes, LIMITS.sizes),
+    fitNote: text(input.fitNote, LIMITS.fit_note),
+    description: text(input.description, 1500),
   };
   const limited = await rateLimit(`enrich:${ctx.supplierId}`, { limit: 20, windowSeconds: 60 });
   if (!limited.allowed) return { error: "Too many AI requests — try again in a minute." };
   const budget = await assertTokenBudget(500);
   if (!budget.ok) return { error: budget.error, upgrade: true };
+  Object.assign(safeInput, await comparablePrices(safeInput.category));
   const result = await enrichProduct(safeInput);
   await recordTokenUsage(result.tokensUsed);
   return result;
+}
+
+/**
+ * Market context for the enrichment prompt: retail prices of up to 5 other
+ * published products in the same category, platform-wide, plus the typical
+ * retail ÷ wholesale multiple across them. Retail prices are public (they're
+ * shown on storefronts); wholesale prices are not, so those only ever leave
+ * here as one aggregate ratio, never per product. Uses the admin client
+ * because the supplier's own client can only see its own catalog — without
+ * it, comparables are simply omitted.
+ */
+async function comparablePrices(
+  category: string | undefined,
+): Promise<Pick<EnrichInput, "comparableRetailPrices" | "comparableRetailMultiple">> {
+  const none = { comparableRetailPrices: undefined, comparableRetailMultiple: null };
+  if (!category) return none;
+  const admin = createAdminClient();
+  if (!admin) return none;
+  const { data } = await admin
+    .from("products")
+    .select("retail_price, wholesale_price")
+    .eq("status", "published")
+    .ilike("category", category)
+    .not("retail_price", "is", null)
+    .gt("retail_price", 0)
+    .order("updated_at", { ascending: false })
+    .limit(5);
+  const rows = data ?? [];
+  if (!rows.length) return none;
+  const retail = rows.map((r) => Math.round((r.retail_price as number) * 100) / 100);
+  const multiples = rows
+    .filter((r) => r.wholesale_price != null && r.wholesale_price > 0)
+    .map((r) => (r.retail_price as number) / (r.wholesale_price as number));
+  const multiple = multiples.length
+    ? Math.round((multiples.reduce((s, m) => s + m, 0) / multiples.length) * 10) / 10
+    : null;
+  return { comparableRetailPrices: retail, comparableRetailMultiple: multiple };
 }
