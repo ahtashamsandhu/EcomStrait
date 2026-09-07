@@ -1,3 +1,4 @@
+import { createAdminClient } from "@ecomstrait/db/admin";
 import type { Metadata } from "next";
 import { BarChart3, ClipboardList, CheckCircle2, Timer, DollarSign, ShoppingBag, Clock3, Wallet as WalletIcon } from "lucide-react";
 import { createClient } from "@ecomstrait/auth/server";
@@ -39,9 +40,12 @@ export default async function AnalyticsPage() {
   // Persist the freshest quality score (owner only; best-effort; when
   // changed) — genuinely best-effort now: an RLS denial or transient error
   // here must not fail the whole page render.
+  // The column is platform-set (a trigger rejects session writes), so the
+  // persisted value is computed here and written with the service role.
   if (my?.isOwner && a.quality.score !== supplier.quality_score) {
     try {
-      await supabase.from("suppliers").update({ quality_score: a.quality.score }).eq("id", supplier.id);
+      const admin = createAdminClient();
+      if (admin) await admin.from("suppliers").update({ quality_score: a.quality.score }).eq("id", supplier.id);
     } catch {
       /* best-effort */
     }

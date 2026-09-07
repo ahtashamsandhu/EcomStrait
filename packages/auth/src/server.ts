@@ -1,5 +1,5 @@
 import { createServerClient } from "@supabase/ssr";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { createAdminClient } from "@ecomstrait/db/admin";
 import type { Database } from "@ecomstrait/db/types";
 
@@ -65,6 +65,14 @@ export async function requestPasswordReset(
     return { status: "error", message: "Password reset is not configured. Please try again later." };
   }
 
+  // The "does this email exist" answer is a product decision, but it must
+  // not be free to ask at scale: throttle per client address (and per
+  // address asked about) before touching the lookup.
+  const throttled = await passwordResetThrottled(admin, email);
+  if (throttled) {
+    return { status: "error", message: "Too many reset attempts. Please wait a few minutes and try again." };
+  }
+
   const { data: exists, error: lookupError } = await admin.rpc("auth_email_exists", {
     p_email: email,
   });
@@ -74,4 +82,40 @@ export async function requestPasswordReset(
   const { error } = await admin.auth.resetPasswordForEmail(email, { redirectTo });
   if (error) return { status: "error", message: error.message };
   return { status: "sent" };
+}
+
+type RateLimitClient = {
+  rpc: (
+    fn: string,
+    args: Record<string, unknown>,
+  ) => Promise<{ data: { allowed: boolean }[] | null; error: { message: string } | null }>;
+};
+
+async function passwordResetThrottled(admin: unknown, email: string): Promise<boolean> {
+  let ip = "unknown";
+  try {
+    const h = await headers();
+    ip = (h.get("x-forwarded-for") ?? h.get("x-real-ip") ?? "unknown").split(",")[0].trim() || "unknown";
+  } catch {
+    /* outside a request scope: fall through with "unknown" */
+  }
+  const client = admin as RateLimitClient;
+  const buckets: [string, number][] = [
+    [`pwreset:ip:${ip}`, 10],
+    [`pwreset:email:${email}`, 5],
+  ];
+  for (const [bucket, limit] of buckets) {
+    try {
+      const { data, error } = await client.rpc("bump_rate_limit", {
+        p_bucket: bucket.slice(0, 200),
+        p_window_seconds: 900,
+        p_limit: limit,
+      });
+      if (error) continue; // fail open: the limiter must never block resets by itself
+      if (data?.[0] && !data[0].allowed) return true;
+    } catch {
+      /* fail open */
+    }
+  }
+  return false;
 }

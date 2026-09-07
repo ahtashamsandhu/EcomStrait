@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 
 /** Public reads of a store's blog — published posts only, service-role (no auth), same pattern as storefront-api.ts. */
 

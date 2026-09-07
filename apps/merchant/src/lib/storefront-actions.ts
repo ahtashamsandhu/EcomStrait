@@ -1,6 +1,6 @@
 "use server";
 
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { getStripe, merchantUrl } from "@/lib/stripe";
 
 const COUNTRIES: string[] = ["US", "CA", "GB", "AU", "PK", "IN", "AE", "DE", "FR", "NL", "SE", "ES", "IT", "SG"];

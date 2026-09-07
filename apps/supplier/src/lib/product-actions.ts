@@ -9,6 +9,8 @@ import { enrichProduct, type EnrichInput, type Enrichment } from "@/lib/ai";
 import { chunk, cleanIds, type BulkResult } from "@/lib/bulk";
 import { syncProductToStores } from "@/lib/sync-stores";
 import { assertCanAddProduct, assertTokenBudget, recordTokenUsage } from "@/lib/entitlements";
+import { friendlyError } from "@/lib/errors";
+import { rateLimit } from "@/lib/rate-limit";
 
 /** Raw form values (strings from inputs); parsed here into typed columns. */
 export type ProductInput = {
@@ -33,6 +35,62 @@ function num(v?: string): number | null {
   if (v == null || v.trim() === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+/** Hard ceilings, mirrored by CHECK constraints on `products` (20260907120100). */
+const MAX_PRICE = 10_000_000;
+const MAX_STOCK = 10_000_000;
+const MAX_IMAGES = 30;
+const MAX_IMPORT_ROWS = 2000;
+const LIMITS: Record<string, number> = {
+  title: 300,
+  description: 20_000,
+  category: 120,
+  sku: 120,
+  seo_title: 300,
+  seo_description: 1000,
+  sizes: 2000,
+  material: 2000,
+  fit_note: 2000,
+};
+
+/**
+ * Validate one product's raw form values. Returns an error message, or null
+ * when the row is acceptable. Negative prices used to flow straight into
+ * merchant cost and payable maths; unbounded text bloated every storefront
+ * that listed the product.
+ */
+function validateProductInput(input: ProductInput, label = "Product"): string | null {
+  if (!input || typeof input !== "object") return `${label}: invalid input.`;
+  if (!input.title?.trim()) return `${label}: a title is required.`;
+  for (const [key, max] of Object.entries(LIMITS)) {
+    const v = (input as Record<string, unknown>)[key];
+    if (v != null && typeof v !== "string") return `${label}: ${key} must be text.`;
+    if (typeof v === "string" && v.length > max) return `${label}: ${key} is too long (max ${max} characters).`;
+  }
+  for (const key of ["wholesale_price", "retail_price", "map_price"] as const) {
+    const raw = input[key];
+    if (raw == null || raw.trim() === "") continue;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0 || n > MAX_PRICE) return `${label}: ${key.replace("_", " ")} must be between 0 and ${MAX_PRICE}.`;
+  }
+  if (input.stock != null && input.stock.trim() !== "") {
+    const n = Number(input.stock);
+    if (!Number.isFinite(n) || n < 0 || n > MAX_STOCK) return `${label}: stock must be between 0 and ${MAX_STOCK}.`;
+  }
+  if (input.status != null && input.status !== "draft" && input.status !== "published") {
+    return `${label}: status must be draft or published.`;
+  }
+  if (input.images != null) {
+    if (!Array.isArray(input.images)) return `${label}: images must be a list.`;
+    if (input.images.length > MAX_IMAGES) return `${label}: at most ${MAX_IMAGES} images.`;
+    for (const url of input.images) {
+      if (typeof url !== "string" || url.length > 2000 || !/^https?:\/\//i.test(url)) {
+        return `${label}: each image must be an https URL.`;
+      }
+    }
+  }
+  return null;
 }
 
 function toRow(input: ProductInput) {
@@ -60,12 +118,26 @@ export async function createProduct(
 ): Promise<{ error: string; upgrade?: boolean } | never> {
   const ctx = await requireApprovedSupplier();
   if ("error" in ctx) return ctx;
+  const invalid = validateProductInput(input);
+  if (invalid) return { error: invalid };
   const limit = await assertCanAddProduct();
   if (!limit.ok) return limit;
-  const { error } = await ctx.supabase
+  const row = toRow(input);
+  const { data: created, error } = await ctx.supabase
     .from("products")
-    .insert({ supplier_id: ctx.supplierId, ...toRow(input) });
-  if (error) return { error: error.message };
+    .insert({ supplier_id: ctx.supplierId, ...row })
+    .select("id")
+    .single();
+  if (error) return { error: friendlyError(error) };
+  // The opening balance belongs in the audit log like every later change.
+  if (created && row.stock > 0) {
+    await ctx.supabase.from("inventory_adjustments").insert({
+      product_id: created.id,
+      delta: row.stock,
+      resulting_stock: row.stock,
+      reason: "Initial stock",
+    });
+  }
   revalidatePath("/catalog");
   redirect("/catalog");
 }
@@ -84,22 +156,37 @@ export async function updateProduct(
 ): Promise<{ error: string; upgrade?: boolean } | never> {
   const ctx = await requireApprovedSupplier();
   if ("error" in ctx) return ctx;
+  const invalid = validateProductInput(input);
+  if (invalid) return { error: invalid };
 
   // Captured before the write: the price cascade needs to know which listings
   // were still following this product's old price.
   const { data: before } = await ctx.supabase
     .from("products")
-    .select("retail_price")
+    .select("retail_price, stock")
     .eq("id", id)
     .eq("supplier_id", ctx.supplierId)
     .maybeSingle();
+  if (!before) return { error: "Product not found." };
 
+  // Stock is not written with the rest of the row: it moves through the
+  // audited, row-locked RPC so the inventory log stays complete and a sale
+  // landing at the same moment can't be overwritten.
+  const { stock, ...fields } = toRow(input);
   const { error } = await ctx.supabase
     .from("products")
-    .update(toRow(input))
+    .update(fields)
     .eq("id", id)
     .eq("supplier_id", ctx.supplierId);
-  if (error) return { error: error.message };
+  if (error) return { error: friendlyError(error) };
+  if (stock !== before.stock) {
+    const { error: stockError } = await ctx.supabase.rpc("set_product_stock", {
+      p_product_id: id,
+      p_stock: stock,
+      p_reason: "Edited on product form",
+    });
+    if (stockError) return { error: friendlyError(stockError) };
+  }
 
   // Custom-website storefronts read this row live, so title and images are
   // already correct there — but their price comes from `store_products`, and
@@ -119,7 +206,7 @@ export async function deleteProduct(id: string): Promise<{ error?: string }> {
     .delete()
     .eq("id", id)
     .eq("supplier_id", ctx.supplierId);
-  if (error) return { error: error.message };
+  if (error) return { error: friendlyError(error) };
   revalidatePath("/catalog");
   return {};
 }
@@ -130,12 +217,13 @@ export async function setProductStatus(
 ): Promise<{ error?: string }> {
   const ctx = await requireApprovedSupplier();
   if ("error" in ctx) return { error: ctx.error };
+  if (status !== "draft" && status !== "published") return { error: "Invalid status." };
   const { error } = await ctx.supabase
     .from("products")
     .update({ status })
     .eq("id", id)
     .eq("supplier_id", ctx.supplierId);
-  if (error) return { error: error.message };
+  if (error) return { error: friendlyError(error) };
 
   // Unpublishing has to reach the storefronts already selling it, or the
   // product stays buyable on every store that listed it while we consider it
@@ -160,6 +248,7 @@ export async function bulkSetProductStatus(
 
   const targets = cleanIds(ids);
   if (!targets.length) return { affected: 0, error: "Nothing selected." };
+  if (status !== "draft" && status !== "published") return { affected: 0, error: "Invalid status." };
 
   let affected = 0;
   const changed: string[] = [];
@@ -170,7 +259,7 @@ export async function bulkSetProductStatus(
       .eq("supplier_id", ctx.supplierId)
       .in("id", part)
       .select("id");
-    if (error) return { affected, error: error.message };
+    if (error) return { affected, error: friendlyError(error) };
     changed.push(...(data ?? []).map((r) => r.id));
     affected += data?.length ?? 0;
   }
@@ -200,7 +289,7 @@ export async function bulkDeleteProducts(ids: string[]): Promise<BulkResult> {
       .eq("supplier_id", ctx.supplierId)
       .in("id", part)
       .select("id");
-    if (error) return { affected, error: error.message };
+    if (error) return { affected, error: friendlyError(error) };
     affected += data?.length ?? 0;
   }
 
@@ -214,24 +303,52 @@ export async function bulkImportProducts(
 ): Promise<{ imported: number; error?: string; upgrade?: boolean }> {
   const ctx = await requireApprovedSupplier();
   if ("error" in ctx) return { imported: 0, error: ctx.error };
-  const clean = rows.filter((r) => r.title?.trim());
+  if (!Array.isArray(rows)) return { imported: 0, error: "No valid rows found." };
+  if (rows.length > MAX_IMPORT_ROWS) {
+    return { imported: 0, error: `Import at most ${MAX_IMPORT_ROWS} rows at a time.` };
+  }
+  const clean = rows.filter((r) => r?.title?.trim());
   if (!clean.length) return { imported: 0, error: "No valid rows found." };
+  for (let i = 0; i < clean.length; i++) {
+    const invalid = validateProductInput(clean[i], `Row ${i + 1}`);
+    if (invalid) return { imported: 0, error: invalid };
+  }
   const limit = await assertCanAddProduct(clean.length);
   if (!limit.ok) return { imported: 0, error: limit.error, upgrade: true };
-  const { error, count } = await ctx.supabase
-    .from("products")
-    .insert(clean.map((r) => ({ supplier_id: ctx.supplierId, ...toRow(r) })), { count: "exact" });
-  if (error) return { imported: 0, error: error.message };
+  let imported = 0;
+  for (const part of chunk(clean, 200)) {
+    const { error, count } = await ctx.supabase
+      .from("products")
+      .insert(part.map((r) => ({ supplier_id: ctx.supplierId, ...toRow(r) })), { count: "exact" });
+    if (error) return { imported, error: friendlyError(error) };
+    imported += count ?? part.length;
+  }
   revalidatePath("/catalog");
-  return { imported: count ?? clean.length };
+  return { imported };
 }
 
 export async function enrichProductAction(
   input: EnrichInput,
 ): Promise<Enrichment | { error: string; upgrade?: boolean }> {
+  // This calls a paid model. It used to run for anyone who could reach the
+  // action — no session, no approval, no cap on the prompt, no rate limit.
+  const ctx = await requireApprovedSupplier();
+  if ("error" in ctx) return { error: ctx.error };
+  const title = String(input?.title ?? "").trim();
+  if (!title) return { error: "Enter a product title first." };
+  const safeInput: EnrichInput = {
+    title: title.slice(0, 300),
+    category: input.category ? String(input.category).slice(0, 120) : undefined,
+    wholesalePrice:
+      typeof input.wholesalePrice === "number" && Number.isFinite(input.wholesalePrice) && input.wholesalePrice >= 0
+        ? input.wholesalePrice
+        : undefined,
+  };
+  const limited = await rateLimit(`enrich:${ctx.supplierId}`, { limit: 20, windowSeconds: 60 });
+  if (!limited.allowed) return { error: "Too many AI requests — try again in a minute." };
   const budget = await assertTokenBudget(500);
   if (!budget.ok) return { error: budget.error, upgrade: true };
-  const result = await enrichProduct(input);
+  const result = await enrichProduct(safeInput);
   await recordTokenUsage(result.tokensUsed);
   return result;
 }

@@ -1,5 +1,5 @@
 import "server-only";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 
 /**
  * Operational alerts to the EcomStrait team.

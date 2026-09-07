@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import type { AiApproval } from "@ecomstrait/db";
 
 export type ApprovalStatus = "pending" | "approved" | "rejected";

@@ -3,7 +3,7 @@ import "server-only";
 import { Annotation, StateGraph, START, END, MessagesAnnotation } from "@langchain/langgraph";
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import type { StructuredToolInterface } from "@langchain/core/tools";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { createChatModel } from "./model";
 import { createBusinessAdvisorAgent } from "./business-advisor";
 import { createAnalyticsAgent } from "./analytics-agent";

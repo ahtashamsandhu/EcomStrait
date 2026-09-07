@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 
 /** Public reads of a store's custom pages — created via the EcomAI chat (see applyPageAction in builder-actions.ts). */
 

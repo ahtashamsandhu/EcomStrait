@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
-import { createAdminClient } from "@ecomstrait/db";
+import { secretMatches } from "@/lib/secret-compare";
+import { createAdminClient } from "@ecomstrait/db/admin";
+import { sealToken } from "@/lib/token-crypto";
 
 /**
  * The Shopify app calls this on install (afterAuth) with the shop + access
@@ -8,7 +10,7 @@ import { createAdminClient } from "@ecomstrait/db";
 export async function POST(req: Request) {
   const secret = process.env.SHOPIFY_APP_SHARED_SECRET;
   const provided = req.headers.get("x-ecomstrait-secret");
-  if (!secret || provided !== secret) {
+  if (!secretMatches(provided, secret)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -33,7 +35,7 @@ export async function POST(req: Request) {
   // unconditionally, which meant a merchant opening their own store handed it
   // back to the pool and made it claimable by someone else.
   const connection = {
-    access_token: accessToken,
+    access_token: sealToken(accessToken),
     scopes: body.scopes ?? null,
     shopify_shop_id: body.shopifyShopId ?? null,
     sync_status: "connected",

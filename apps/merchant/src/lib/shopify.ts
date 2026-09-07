@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { escapeHtml } from "@/lib/notify";
 
 export const SHOPIFY_API_VERSION = "2026-10";
 
@@ -391,7 +392,7 @@ export async function pushProductsToShopify(
       const res = await gql<ProductCreateResp>(PRODUCT_CREATE, {
         product: {
           title: p.title,
-          descriptionHtml: p.description ? `<p>${p.description}</p>` : undefined,
+          descriptionHtml: p.description ? `<p>${escapeHtml(p.description)}</p>` : undefined,
           status: "ACTIVE",
         },
         media: mediaInput(p),
@@ -857,7 +858,7 @@ export async function updateShopifyProductContent(
       product: {
         id: productGid,
         title: content.title,
-        descriptionHtml: content.description ? `<p>${content.description}</p>` : "",
+        descriptionHtml: content.description ? `<p>${escapeHtml(content.description)}</p>` : "",
       },
     });
     const errs = collectErrors(res.data?.productUpdate?.userErrors, res.errors);

@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@ecomstrait/db/types";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { normalizePlan } from "@/lib/store-plan";
 import { getPlatformTopSellers } from "@/lib/catalog";
 import { getMerchantRevenueAnalytics } from "@/lib/revenue-analytics";

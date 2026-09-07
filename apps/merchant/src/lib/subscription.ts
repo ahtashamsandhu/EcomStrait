@@ -1,5 +1,5 @@
 import { createClient } from "@ecomstrait/auth/server";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import type { PlanTier, Subscription, SubscriptionStatus } from "@ecomstrait/db";
 import { getStripe, planForPrice, mapStripeStatus, periodEndIso } from "@/lib/stripe";
 

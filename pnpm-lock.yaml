@@ -302,6 +302,9 @@ importers:
       '@supabase/supabase-js':
         specifier: ^2.110.7
         version: 2.110.7
+      server-only:
+        specifier: ^0.0.1
+        version: 0.0.1
 
   packages/ui:
     dependencies:

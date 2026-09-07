@@ -31,7 +31,9 @@ export type UploadedMedia = {
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 export const MAX_VIDEO_BYTES = 64 * 1024 * 1024;
 
-const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif", "image/svg+xml"];
+// No SVG: it can carry scripts, and the public bucket serves it with the
+// uploader-declared content type.
+const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"];
 const VIDEO_TYPES = ["video/mp4", "video/webm", "video/quicktime"];
 
 export function r2Configured(): boolean {

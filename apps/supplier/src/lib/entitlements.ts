@@ -79,17 +79,13 @@ export async function recordTokenUsage(tokens: number): Promise<void> {
   const ctx = await getSupplierContext();
   if ("error" in ctx) return;
 
-  const day = today();
-  const { data } = await ctx.supabase
-    .from("supplier_usage_daily")
-    .select("tokens_used")
-    .eq("supplier_id", ctx.supplierId)
-    .eq("day", day)
-    .maybeSingle();
-  const next = (data?.tokens_used ?? 0) + Math.round(tokens);
-  await ctx.supabase
-    .from("supplier_usage_daily")
-    .upsert({ supplier_id: ctx.supplierId, day, tokens_used: next }, { onConflict: "supplier_id,day" });
+  // Atomic `tokens_used = tokens_used + n` in the database. The table is
+  // read-only for sessions now, so a user can't zero their own counter.
+  const { error } = await ctx.supabase.rpc("increment_supplier_token_usage", {
+    p_supplier_id: ctx.supplierId,
+    p_tokens: Math.round(tokens),
+  });
+  if (error) console.error("[entitlements] usage increment failed:", error.message);
 }
 
 /** Gate adding N more products against the plan's catalog limit. */

@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { requireApprovedSupplier } from "@/lib/supplier-context";
 import { pushListingToShopify } from "@/lib/shopify-push";
 

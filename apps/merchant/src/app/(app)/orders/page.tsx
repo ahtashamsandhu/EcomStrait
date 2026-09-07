@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ShoppingBag, Wallet } from "lucide-react";
 import { createClient } from "@ecomstrait/auth/server";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import type { OrderStatus } from "@ecomstrait/db/types";
 
 export const metadata: Metadata = { title: "Orders" };

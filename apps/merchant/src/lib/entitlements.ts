@@ -90,17 +90,10 @@ export async function recordTokenUsage(tokens: number): Promise<void> {
   } = await supabase.auth.getUser();
   if (!user) return;
 
-  const day = today();
-  const { data } = await supabase
-    .from("usage_daily")
-    .select("tokens_used")
-    .eq("user_id", user.id)
-    .eq("day", day)
-    .maybeSingle();
-  const next = (data?.tokens_used ?? 0) + Math.round(tokens);
-  await supabase
-    .from("usage_daily")
-    .upsert({ user_id: user.id, day, tokens_used: next }, { onConflict: "user_id,day" });
+  // Atomic `tokens_used = tokens_used + n` in the database. The table is
+  // read-only for sessions now, so a user can't zero their own counter.
+  const { error } = await supabase.rpc("increment_token_usage", { p_tokens: Math.round(tokens) });
+  if (error) console.error("[entitlements] usage increment failed:", error.message);
 }
 
 /** Gate store creation against the plan's store limit. */

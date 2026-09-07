@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { TrendingUp, DollarSign, ShoppingBag, Package, Receipt, Clock, HandCoins } from "lucide-react";
 import { createClient } from "@ecomstrait/auth/server";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { getMerchantRevenueAnalytics } from "@/lib/revenue-analytics";
 
 export const metadata: Metadata = { title: "Sales" };

@@ -1,7 +1,7 @@
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import type { OrderPaymentType } from "@ecomstrait/db";
 import { propagateStockAfterSale } from "@/lib/product-propagation";
-import { debitWallet, recordPayable, platformFee } from "@ecomstrait/db/wallet";
+import { debitWallet, creditWallet, recordPayable, platformFee } from "@ecomstrait/db/wallet";
 import { sendEmail } from "@/lib/notify";
 import { recordSyntheticSignals } from "@/lib/synthetic-signals";
 
@@ -83,7 +83,7 @@ export async function recordCustomerOrder(
 
   const subtotal = opts.items.reduce((s, i) => s + (i.unit_price ?? 0) * i.quantity, 0);
 
-  const { data: storeOrder } = await admin
+  const { data: storeOrder, error: insertError } = await admin
     .from("store_orders")
     .insert({
       store_id: opts.storeId,
@@ -97,12 +97,22 @@ export async function recordCustomerOrder(
     })
     .select("id")
     .single();
+  // The unique index on stripe_session_id is the real idempotency gate: two
+  // confirmations racing past the SELECT above both reach this INSERT, and
+  // exactly one wins. The loser must stop here — continuing would create a
+  // second supplier order, debit the wallet again and decrement stock twice.
+  if (insertError || !storeOrder) {
+    if (insertError && insertError.code !== "23505") {
+      console.error("[order-sink] store_orders insert failed:", insertError);
+    }
+    return;
+  }
 
   // Best-effort, placeholder-for-now signals (Docs/prompts — see
   // synthetic-signals.ts) so the co-founder has customer/traffic data to
   // reason over even though no real tracking exists yet. Never blocks or
   // fails the real order above.
-  if (storeOrder) {
+  {
     await recordSyntheticSignals(admin, {
       storeId: opts.storeId,
       orderId: storeOrder.id,
@@ -150,7 +160,7 @@ export async function recordCustomerOrder(
       .insert({
         supplier_id: supplierId,
         store_id: opts.storeId,
-        store_order_id: storeOrder?.id ?? null,
+        store_order_id: storeOrder.id,
         store_name: store?.name ?? null,
         customer_name: opts.customerName ?? null,
         customer_email: opts.customerEmail ?? null,
@@ -192,6 +202,8 @@ export async function recordCustomerOrder(
         kind: "order_deduction",
         orderId: order.id,
         note: `Order ${order.id}: supplier cost + platform fee`,
+        // One debit per (sale, supplier), whatever path replays this.
+        externalRef: `order-debit:${opts.externalId}:${supplierId}`,
       });
       if (debit.ok) {
         await recordPayable(admin, {
@@ -213,6 +225,7 @@ export async function recordCustomerOrder(
         kind: "order_deduction",
         orderId: order.id,
         note: `Order ${order.id}: merchant margin + platform fee`,
+        externalRef: `order-debit:${opts.externalId}:${supplierId}`,
       });
       if (debit.ok) {
         if (store?.user_id) {
@@ -243,13 +256,16 @@ export async function recordCustomerOrder(
   // was placed against; only supplier visibility is what's gated.
   if (productIds.length) {
     for (const i of opts.items) {
-      const p = productById.get(i.product_id ?? "");
-      if (!p) continue;
-      const next = Math.max(0, (p.stock ?? 0) - i.quantity);
-      await admin.from("products").update({ stock: next }).eq("id", i.product_id!);
-      await admin
-        .from("inventory_adjustments")
-        .insert({ product_id: i.product_id!, delta: -i.quantity, resulting_stock: next, reason: "Store sale" });
+      if (!i.product_id || !productById.has(i.product_id)) continue;
+      // Atomic `stock = greatest(0, stock - qty)` in the database, with the
+      // audit row written in the same statement — a read-modify-write here
+      // let two simultaneous sales both subtract from the same stale number.
+      const { error } = await admin.rpc("adjust_product_stock", {
+        p_product_id: i.product_id,
+        p_delta: -i.quantity,
+        p_reason: "Store sale",
+      });
+      if (error) console.error("[order-sink] stock decrement failed:", error);
     }
 
     // The same product is often listed on several stores. Shopify only knows
@@ -257,4 +273,68 @@ export async function recordCustomerOrder(
     // advertising stock that's already gone — and oversells it.
     await propagateStockAfterSale(productIds);
   }
+}
+
+/**
+ * Undo a recorded customer order after the sales channel cancelled it
+ * (e.g. a Shopify `orders/cancelled` webhook). Every supplier order that
+ * hasn't already shipped is cancelled, and whatever was actually debited for
+ * it — read back from the ledger, never from the order row — is credited
+ * back. Idempotent: reversal credits carry an `externalRef` per order.
+ */
+export async function reverseCustomerOrder(admin: Admin, externalId: string, reason: string): Promise<void> {
+  const { data: storeOrder } = await admin
+    .from("store_orders")
+    .select("id, status")
+    .eq("stripe_session_id", externalId)
+    .maybeSingle();
+  if (!storeOrder || storeOrder.status === "refunded") return;
+
+  const { data: orders } = await admin
+    .from("orders")
+    .select("id, supplier_id, store_id, payment_type, credit_status, status")
+    .eq("store_order_id", storeOrder.id);
+
+  for (const o of orders ?? []) {
+    if (o.status === "delivered" || o.status === "cancelled") continue;
+    await admin.from("orders").update({ status: "cancelled" }).eq("id", o.id);
+
+    if (o.credit_status !== "deducted") {
+      // Held (never debited) or already reversed — nothing to give back.
+      await admin.from("orders").update({ credit_status: "reversed" }).eq("id", o.id);
+      continue;
+    }
+
+    if (o.payment_type === "cod") {
+      // Same path a supplier's own cancellation takes; service role passes
+      // its authorization check and it refunds from the ledger.
+      await admin.rpc("reverse_cod_deduction", { p_order_id: o.id });
+      continue;
+    }
+
+    const { data: store } = o.store_id
+      ? await admin.from("stores").select("user_id").eq("id", o.store_id).maybeSingle()
+      : { data: null };
+    const { data: tx } = await admin
+      .from("wallet_transactions")
+      .select("amount")
+      .eq("order_id", o.id)
+      .eq("account_type", "merchant")
+      .eq("kind", "order_deduction");
+    const debited = -(tx ?? []).reduce((sum, t) => sum + Number(t.amount), 0);
+    if (store?.user_id && debited > 0) {
+      await creditWallet(admin, debited, {
+        accountType: "merchant",
+        accountId: store.user_id,
+        kind: "reversal",
+        orderId: o.id,
+        note: reason,
+        externalRef: `reversal:${o.id}`,
+      });
+    }
+    await admin.from("payable_ledger").delete().eq("order_id", o.id).eq("account_type", "supplier").eq("status", "pending");
+    await admin.from("orders").update({ credit_status: "reversed" }).eq("id", o.id);
+  }
+
+  await admin.from("store_orders").update({ status: "refunded" }).eq("id", storeOrder.id);
 }

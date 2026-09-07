@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type Stripe from "stripe";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { creditWallet, releaseHeldOrders } from "@ecomstrait/db/wallet";
 import { getStripe, planForPrice, mapStripeStatus, periodEndIso } from "@/lib/stripe";
 
@@ -46,6 +46,8 @@ export async function POST(req: Request) {
   switch (event.type) {
     case "checkout.session.completed": {
       const s = event.data.object as Stripe.Checkout.Session;
+      // Delayed payment methods complete the session before the money lands.
+      if (s.payment_status !== "paid") break;
       if (s.metadata?.purpose === "wallet_topup" && s.metadata.supplier_id && s.amount_total) {
         const amount = s.amount_total / 100;
         await creditWallet(admin, amount, {

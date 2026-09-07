@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import type Stripe from "stripe";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { getStripe, planForPrice, mapStripeStatus, periodEndIso } from "@/lib/stripe";
 import { creditWallet, releaseHeldOrders } from "@ecomstrait/db/wallet";
+import { confirmOrder } from "@/lib/storefront-orders";
 
 /**
  * Optional — the Billing page reconciles from Stripe on load, so a webhook isn't
@@ -41,6 +42,21 @@ export async function POST(req: Request) {
   switch (event.type) {
     case "checkout.session.completed": {
       const s = event.data.object as Stripe.Checkout.Session;
+      // Delayed payment methods complete the session before the money lands;
+      // only a paid session credits or records anything.
+      if (s.payment_status !== "paid") break;
+
+      // A storefront purchase. The customer's browser normally confirms it on
+      // the way back to the thank-you page, but a closed tab or a failed
+      // redirect used to leave a captured payment with no order behind it.
+      if (s.metadata?.store_id) {
+        try {
+          await confirmOrder(s.metadata.store_id, s.id);
+        } catch (err) {
+          console.error("[stripe-webhook] storefront order confirmation failed:", err);
+        }
+        break;
+      }
       if (s.metadata?.purpose === "wallet_topup" && s.metadata.user_id && s.amount_total) {
         const amount = s.amount_total / 100;
         await creditWallet(admin, amount, {

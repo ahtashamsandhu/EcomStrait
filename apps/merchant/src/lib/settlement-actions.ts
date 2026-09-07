@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@ecomstrait/auth/server";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import type { WalletAccountType } from "@ecomstrait/db";
 import { settlePayoutRequestLedger, releasePayoutRequestLedger } from "@ecomstrait/db/wallet";
 import { runWeeklySettlement } from "@/lib/settlement";

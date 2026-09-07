@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import type { ModelRole } from "../types";
 
 const DEFAULT_DAILY_TOKEN_CAP = 200_000;

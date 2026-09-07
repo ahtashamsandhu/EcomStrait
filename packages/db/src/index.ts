@@ -52,7 +52,9 @@ export type {
   PayoutRequest,
   TrafficSource,
 } from "./types";
-export { createAdminClient } from "./admin";
+// `createAdminClient` is deliberately NOT re-exported here: this barrel is
+// imported by client components (types, plans), and the admin client is
+// server-only. Import it from "@ecomstrait/db/admin".
 export {
   PLAN_ENTITLEMENTS,
   PLAN_ORDER,

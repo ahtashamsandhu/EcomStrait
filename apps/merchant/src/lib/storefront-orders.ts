@@ -1,4 +1,4 @@
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { getStripe } from "@/lib/stripe";
 import { recordCustomerOrder } from "@/lib/order-sink";
 
@@ -112,30 +112,43 @@ export async function confirmOrder(
   if (!stripe || !admin) return null;
 
   const session = await stripe.checkout.sessions.retrieve(sessionId);
-  // Guard against a session id from another store being replayed here.
-  if (session.metadata?.store_id && session.metadata.store_id !== storeId) return null;
+  // Only a session this app created for THIS store confirms here — anything
+  // without our store_id (or with another store's) is not ours to record.
+  if (session.metadata?.store_id !== storeId) return null;
   if (session.payment_status !== "paid") return null;
 
-  const lines: { productId: string; quantity: number }[] = JSON.parse(
-    (session.metadata?.lines as string) ?? "[]",
-  );
+  // What was actually bought, at the price actually paid — straight from the
+  // Stripe line items, not re-derived from today's catalog price.
+  const lineItems = await stripe.checkout.sessions.listLineItems(sessionId, {
+    limit: 100,
+    expand: ["data.price.product"],
+  });
+  const lines = lineItems.data
+    .map((li) => {
+      const product = li.price?.product;
+      const productId =
+        product && typeof product === "object" && "metadata" in product ? product.metadata?.product_id : undefined;
+      return {
+        productId: productId ?? null,
+        quantity: Math.max(1, li.quantity ?? 1),
+        unitPrice: li.price?.unit_amount != null ? li.price.unit_amount / 100 : null,
+        name: li.description ?? "Product",
+      };
+    })
+    .filter((l): l is typeof l & { productId: string } => Boolean(l.productId));
   const ids = lines.map((l) => l.productId);
   if (!ids.length) return null;
 
-  const [{ data: prods }, { data: sp }] = await Promise.all([
-    admin.from("products").select("id, title, retail_price, supplier_id").in("id", ids),
-    admin.from("store_products").select("product_id, price").eq("store_id", storeId),
-  ]);
-  const priceMap = new Map((sp ?? []).map((r) => [r.product_id, r.price]));
+  const { data: prods } = await admin.from("products").select("id, title, supplier_id").in("id", ids);
 
   const items = lines.map((l) => {
     const p = (prods ?? []).find((x) => x.id === l.productId);
     return {
       product_id: l.productId,
       supplier_id: p?.supplier_id ?? null,
-      name: p?.title ?? "Product",
+      name: p?.title ?? l.name,
       quantity: l.quantity,
-      unit_price: priceMap.get(l.productId) ?? p?.retail_price ?? null,
+      unit_price: l.unitPrice,
     };
   });
 

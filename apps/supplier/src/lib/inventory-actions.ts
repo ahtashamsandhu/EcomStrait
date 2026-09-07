@@ -5,6 +5,7 @@ import { after } from "next/server";
 import { requireApprovedSupplier } from "@/lib/supplier-context";
 import { syncProductToStores } from "@/lib/sync-stores";
 import { chunk, cleanIds, type BulkResult } from "@/lib/bulk";
+import { friendlyError } from "@/lib/errors";
 
 /** Set a product's stock to an absolute value, logging the adjustment. */
 export async function setStock(
@@ -15,7 +16,8 @@ export async function setStock(
   const ctx = await requireApprovedSupplier();
   if ("error" in ctx) return ctx;
 
-  const stock = Math.max(0, Math.trunc(newStock));
+  if (!Number.isFinite(newStock)) return { error: "Enter a stock number." };
+  const stock = Math.min(10_000_000, Math.max(0, Math.trunc(newStock)));
   const { data: prod } = await ctx.supabase
     .from("products")
     .select("stock")
@@ -25,19 +27,14 @@ export async function setStock(
   if (!prod) return { error: "Product not found." };
   if (prod.stock === stock) return {};
 
-  const { error } = await ctx.supabase
-    .from("products")
-    .update({ stock })
-    .eq("id", productId)
-    .eq("supplier_id", ctx.supplierId);
-  if (error) return { error: error.message };
-
-  await ctx.supabase.from("inventory_adjustments").insert({
-    product_id: productId,
-    delta: stock - prod.stock,
-    resulting_stock: stock,
-    reason: reason ?? "Manual update",
+  // One statement in the database: the update and its audit row together,
+  // under a row lock, so a sale landing at the same moment can't be lost.
+  const { error } = await ctx.supabase.rpc("set_product_stock", {
+    p_product_id: productId,
+    p_stock: stock,
+    p_reason: reason ?? "Manual update",
   });
+  if (error) return { error: friendlyError(error) };
 
   // Every Shopify store selling this product holds its own stock number and
   // won't hear about the change otherwise. Runs after the response so the
@@ -111,29 +108,22 @@ export async function bulkSetStock(ids: string[], stock: number): Promise<BulkRe
   const changed = rows.filter((r) => r.stock !== next);
   if (!changed.length) return { affected: 0 };
 
-  for (const part of chunk(changed.map((c) => c.id))) {
-    const { error } = await ctx.supabase
-      .from("products")
-      .update({ stock: next })
-      .eq("supplier_id", ctx.supplierId)
-      .in("id", part);
-    if (error) return { affected: 0, error: error.message };
+  let affected = 0;
+  for (const c of changed) {
+    const { error } = await ctx.supabase.rpc("set_product_stock", {
+      p_product_id: c.id,
+      p_stock: next,
+      p_reason: "Bulk update",
+    });
+    if (error) return { affected, error: friendlyError(error) };
+    affected += 1;
   }
-
-  await ctx.supabase.from("inventory_adjustments").insert(
-    changed.map((c) => ({
-      product_id: c.id,
-      delta: next - c.stock,
-      resulting_stock: next,
-      reason: "Bulk update",
-    })),
-  );
 
   after(() => syncProductToStores(changed.map((c) => c.id), { stock: true, content: false }));
 
   revalidatePath("/inventory");
   revalidatePath("/catalog");
-  return { affected: changed.length };
+  return { affected };
 }
 
 /**
@@ -154,44 +144,27 @@ export async function bulkAdjustStock(ids: string[], delta: number): Promise<Bul
   const { rows, error: readErr } = await readStock(ctx, targets);
   if (readErr) return { affected: 0, error: readErr };
 
-  // Group by resulting stock so each distinct value is a single update.
-  const byNext = new Map<number, { id: string; stock: number }[]>();
-  for (const r of rows) {
-    const next = Math.max(0, r.stock + step);
-    if (next === r.stock) continue; // already floored at zero
-    const bucket = byNext.get(next);
-    if (bucket) bucket.push(r);
-    else byNext.set(next, [r]);
-  }
-  if (!byNext.size) return { affected: 0 };
+  // Products already at zero can't go lower — skip them so the audit log
+  // doesn't fill with no-op rows.
+  const targetsToMove = rows.filter((r) => Math.max(0, r.stock + step) !== r.stock);
+  if (!targetsToMove.length) return { affected: 0 };
 
-  const log: { product_id: string; delta: number; resulting_stock: number; reason: string }[] = [];
-  for (const [next, group] of byNext) {
-    for (const part of chunk(group.map((g) => g.id))) {
-      const { error } = await ctx.supabase
-        .from("products")
-        .update({ stock: next })
-        .eq("supplier_id", ctx.supplierId)
-        .in("id", part);
-      if (error) return { affected: 0, error: error.message };
-    }
-    for (const g of group) {
-      log.push({
-        product_id: g.id,
-        delta: next - g.stock,
-        resulting_stock: next,
-        reason: step > 0 ? `Bulk +${step}` : `Bulk ${step}`,
-      });
-    }
+  const moved: string[] = [];
+  for (const r of targetsToMove) {
+    const { error } = await ctx.supabase.rpc("adjust_product_stock", {
+      p_product_id: r.id,
+      p_delta: step,
+      p_reason: step > 0 ? `Bulk +${step}` : `Bulk ${step}`,
+    });
+    if (error) return { affected: moved.length, error: friendlyError(error) };
+    moved.push(r.id);
   }
 
-  await ctx.supabase.from("inventory_adjustments").insert(log);
-
-  after(() => syncProductToStores(log.map((l) => l.product_id), { stock: true, content: false }));
+  after(() => syncProductToStores(moved, { stock: true, content: false }));
 
   revalidatePath("/inventory");
   revalidatePath("/catalog");
-  return { affected: log.length };
+  return { affected: moved.length };
 }
 
 /** Apply many stock changes at once (batch update). */

@@ -1,4 +1,4 @@
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import type { PlanTier, SupplierSubscription, SubscriptionStatus } from "@ecomstrait/db";
 import { getSupplierContext } from "@/lib/supplier-context";
 import { getStripe, planForPrice, mapStripeStatus, periodEndIso } from "@/lib/stripe";

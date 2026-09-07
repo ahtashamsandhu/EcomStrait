@@ -1,6 +1,6 @@
 import { cache } from "react";
 import { cookies } from "next/headers";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { productImage } from "@/lib/catalog";
 import { isPublicStatus } from "@/lib/store-status";
 import { UNCATEGORIZED, categoryLabel } from "@/lib/storefront-shared";
@@ -517,7 +517,15 @@ export async function priceCart(storeId: string, lines: RawLine[]): Promise<Pric
       continue;
     }
 
-    const wanted = Math.min(Math.max(1, line.quantity), MAX_LINE_QTY);
+    if (!Number.isFinite(line.quantity) || line.quantity < 1) {
+      // A zero or negative quantity is a malformed line, not a request for
+      // one unit — it used to be silently bumped to 1 and reported as
+      // "adjusted", which is how a customer ends up buying something they
+      // tried to remove.
+      out.removed.push({ productId: line.productId, reason: "unavailable" });
+      continue;
+    }
+    const wanted = Math.min(line.quantity, MAX_LINE_QTY);
     const quantity = Math.min(wanted, api.available);
     if (quantity !== line.quantity) out.adjusted.push({ productId: line.productId, to: quantity });
 

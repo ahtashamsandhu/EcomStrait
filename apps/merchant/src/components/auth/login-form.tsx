@@ -5,12 +5,13 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Loader2 } from "lucide-react";
 import { createClient } from "@ecomstrait/auth/client";
+import { safeNextPath } from "@ecomstrait/auth/redirect";
 import { Button, TextField, PasswordField } from "@/components/ui";
 
 export function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
-  const redirectTo = params.get("redirect") || "/dashboard";
+  const redirectTo = safeNextPath(params.get("redirect"));
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

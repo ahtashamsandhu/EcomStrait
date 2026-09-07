@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { authenticateEmbedded } from "@/lib/embedded-auth";
 import { pushProductsToShopify } from "@/lib/shopify";
 import { productImage } from "@/lib/catalog";
+import { withOpenToken } from "@/lib/token-crypto";
 
 export const runtime = "nodejs";
 
@@ -72,11 +73,12 @@ export async function POST(req: Request) {
   // the merchant sees it in Shopify without a second step.
   let pushed = false;
   if (inserted?.status === "approved") {
-    const { data: shop } = await admin
+    const { data: rawShop } = await admin
       .from("shopify_stores")
       .select("shop_domain, access_token")
       .eq("id", shopifyStoreId)
       .maybeSingle();
+    const shop = withOpenToken(rawShop);
     if (shop?.access_token) {
       try {
         // Must carry the same payload as provisioning and Sync products.

@@ -1,4 +1,5 @@
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
+import { secretMatches } from "@/lib/secret-compare";
 
 /**
  * Auth for requests coming from the embedded Shopify app.
@@ -29,7 +30,7 @@ export async function authenticateEmbedded(
 ): Promise<EmbeddedAuthResult> {
   const secret = process.env.SHOPIFY_APP_SHARED_SECRET;
   const provided = req.headers.get("x-ecomstrait-secret");
-  if (!secret || provided !== secret) {
+  if (!secretMatches(provided, secret)) {
     return { ok: false, status: 401, error: "Unauthorized" };
   }
 

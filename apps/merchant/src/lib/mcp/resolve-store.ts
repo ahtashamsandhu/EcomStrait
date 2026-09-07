@@ -1,4 +1,5 @@
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
+import { openToken } from "@/lib/token-crypto";
 
 export type ShopifyCredentials = { shop: string; token: string };
 
@@ -27,7 +28,8 @@ export async function resolveStoreCredentials(storeId: string): Promise<ShopifyC
     .select("shop_domain, access_token")
     .eq("id", store.shopify_store_id)
     .single();
-  if (!shopifyStore?.access_token) return null;
+  const token = openToken(shopifyStore?.access_token);
+  if (!shopifyStore || !token) return null;
 
-  return { shop: shopifyStore.shop_domain, token: shopifyStore.access_token };
+  return { shop: shopifyStore.shop_domain, token };
 }

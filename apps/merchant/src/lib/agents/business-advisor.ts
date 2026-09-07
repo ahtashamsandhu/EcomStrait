@@ -1,5 +1,5 @@
 import { runOrchestrator, type OrchestratorResult } from "@ecomstrait/ai";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { createShopifyTools } from "./shopify-tools";
 import { createShopifyWriteTools } from "./shopify-write-tools";
 

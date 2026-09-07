@@ -10,6 +10,9 @@ const COUNTRIES = ["US", "CA", "GB", "AU", "PK", "IN", "AE", "DE", "FR", "NL", "
 
 type Body = { lines?: { productId?: unknown; quantity?: unknown }[] };
 
+/** Matches the cart cookie cap in storefront-api.ts. */
+const MAX_LINES = 100;
+
 /**
  * The origin Stripe should send the customer back to after paying.
  *
@@ -54,11 +57,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ storeId
   if (!stripe) return apiError("Checkout isn't available right now", 503);
 
   const body = await readJson<Body>(req);
-  const explicit: RawLine[] = Array.isArray(body?.lines)
-    ? body.lines
-        .filter((l) => typeof l?.productId === "string" && typeof l?.quantity === "number")
-        .map((l) => ({ productId: l.productId as string, quantity: Math.trunc(l.quantity as number) }))
-    : [];
+  const rawLines = Array.isArray(body?.lines) ? body.lines : [];
+  if (rawLines.length > MAX_LINES) return apiError(`At most ${MAX_LINES} items per checkout`, 400);
+  const explicit: RawLine[] = rawLines
+    .filter((l) => typeof l?.productId === "string" && typeof l?.quantity === "number")
+    .map((l) => ({ productId: l.productId as string, quantity: Math.trunc(l.quantity as number) }));
+  if (explicit.some((l) => !Number.isFinite(l.quantity) || l.quantity < 1)) {
+    return apiError("Quantity must be at least 1", 400);
+  }
 
   const source = explicit.length ? explicit : await readCart(storeId);
   const cart = await priceCart(storeId, source);
@@ -77,7 +83,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ storeId
       quantity: l.quantity,
       price_data: {
         currency: cart.currency,
-        product_data: { name: l.title },
+        // The product id rides on the Stripe line item itself and is read
+        // back with listLineItems at confirmation — session metadata is
+        // capped at 500 chars, which a cart of ~8 products overflowed.
+        product_data: { name: l.title, metadata: { product_id: l.productId } },
         unit_amount: Math.round(l.unitPrice * 100),
       },
     })),
@@ -89,10 +98,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ storeId
     // cart cookie (a page can't) and then forwards to it.
     success_url: `${origin}/api/storefront/${storeId}/checkout/return?session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${base}/store/${storeId}`,
-    metadata: {
-      store_id: storeId,
-      lines: JSON.stringify(cart.lines.map((l) => ({ productId: l.productId, quantity: l.quantity }))),
-    },
+    metadata: { store_id: storeId },
   });
 
   return apiOk({

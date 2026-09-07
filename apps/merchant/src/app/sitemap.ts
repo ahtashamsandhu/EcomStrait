@@ -1,7 +1,7 @@
 import "server-only";
 
 import type { MetadataRoute } from "next";
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { siteUrl } from "@/lib/site-url";
 import { isPublicStatus } from "@/lib/store-status";
 import { listStoreCategories, listStoreProducts } from "@/lib/storefront-api";

@@ -149,9 +149,27 @@ export function truncateForMeta(text: string, max = 160): string {
 
 type JsonLd = Record<string, unknown>;
 
-/** Renders a JSON-LD block. Data only ever comes from the store's own catalog/plan — never user input echoed unescaped elsewhere. */
+/**
+ * Renders a JSON-LD block.
+ *
+ * The data includes supplier-written product titles and descriptions, and
+ * `JSON.stringify` does not escape `</script>` — so a product called
+ * `x</script><script>…` would break out of the tag and run on the storefront
+ * origin. Escaping `<`, `>` and `&` as \uXXXX keeps the JSON valid (parsers
+ * decode the escapes) while making it inert as HTML; U+2028/2029 are escaped
+ * because they are line terminators in JS but not in JSON.
+ */
 export function JsonLdScript({ data }: { data: JsonLd }) {
-  return <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(data) }} />;
+  return <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: safeJsonForHtml(data) }} />;
+}
+
+export function safeJsonForHtml(data: unknown): string {
+  return JSON.stringify(data)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
 }
 
 export function organizationJsonLd({

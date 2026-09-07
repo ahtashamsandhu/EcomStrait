@@ -1,5 +1,6 @@
 import "server-only";
 import { merchantBaseUrl } from "@/lib/merchant-url";
+import { signedInternalHeaders } from "@/lib/internal-request";
 
 /**
  * Ask the merchant app to push an approved listing into its Shopify store.
@@ -14,16 +15,17 @@ export async function pushListingToShopify(
   productId: string,
 ): Promise<{ pushed: boolean; note: string }> {
   const base = merchantBaseUrl();
-  const secret = process.env.ECOMSTRAIT_SHARED_SECRET;
-  if (!base || !secret) {
+  const payload = JSON.stringify({ storeId, productId });
+  const headers = signedInternalHeaders(payload);
+  if (!base || !headers) {
     return { pushed: false, note: "Approved. It goes live on the storefront right away." };
   }
 
   try {
     const res = await fetch(`${base}/api/internal/list-product`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-ecomstrait-secret": secret },
-      body: JSON.stringify({ storeId, productId }),
+      headers,
+      body: payload,
       cache: "no-store",
     });
 

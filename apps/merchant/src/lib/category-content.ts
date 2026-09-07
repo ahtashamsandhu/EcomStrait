@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createAdminClient } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { chat, isGatewayConfigured, assertCostBudget, recordUsage } from "@ecomstrait/ai";
 import { categoryLabel } from "@/lib/storefront-shared";
 

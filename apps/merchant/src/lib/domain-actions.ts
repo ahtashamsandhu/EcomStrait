@@ -4,6 +4,7 @@ import { promises as dns } from "node:dns";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@ecomstrait/auth/server";
 import type { StoreType } from "@ecomstrait/db";
+import { createAdminClient } from "@ecomstrait/db/admin";
 import { domainTarget, isValidDomain, normalizeDomain } from "@/lib/domain";
 import { addProjectDomain, removeProjectDomain } from "@/lib/vercel-domains";
 
@@ -132,7 +133,15 @@ export async function checkStoreDomain(storeId: string): Promise<DomainCheck | {
 
   const connected = resolvedA.includes(target.expectedA);
   const verifiedAt = connected ? new Date().toISOString() : null;
-  await s.supabase.from("stores").update({ domain_verified_at: verifiedAt }).eq("id", storeId);
+  // The DNS proof was checked by this server, so the result is written with
+  // the service role: a session may only ever clear domain_verified_at (a
+  // trigger enforces that), never set it — otherwise a merchant could claim
+  // any hostname without owning it.
+  const admin = createAdminClient();
+  if (admin) {
+    // ownStore() above already proved the caller owns this store.
+    await admin.from("stores").update({ domain_verified_at: verifiedAt }).eq("id", storeId);
+  }
   revalidatePath("/settings");
 
   let vercelError: string | undefined;
